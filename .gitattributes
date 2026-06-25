@@ -1,0 +1,23 @@
+# Normalise line endings across macOS and Windows.
+# Store LF in the repo and check out LF everywhere → no CRLF/LF diff churn.
+* text=auto eol=lf
+
+# Windows-only scripts must keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Shell scripts must stay LF (they run on macOS / Linux / Boole)
+*.sh text eol=lf
+
+# Treat these as binary (never EOL-normalise or text-diff)
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.pptx binary
+*.xlsx binary
+*.docx binary
