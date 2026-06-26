@@ -1,0 +1,16 @@
+# Normalised licence tokens (alphanumeric, lowercased) allowed as in-tree pip deps.
+# Permissive + weak-copyleft-by-file (MPL). GPL/AGPL/LGPL are intentionally ABSENT:
+# they may only run as arms-length subprocesses, never as pip dependencies (rule L6).
+# Matching is substring-on-normalised-licence, so "apache" matches "Apache Software License".
+mit
+bsd
+apache
+isc
+python
+psf
+0bsd
+zlib
+unlicense
+mpl
+mozilla
+cdla

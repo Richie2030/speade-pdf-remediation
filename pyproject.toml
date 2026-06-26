@@ -1,0 +1,61 @@
+[project]
+name = "speade-pdf-remediation"
+version = "0.0.1"
+description = "On-prem PDF remediation pipeline for the UCC SPEADE accessibility programme (WCAG 2.1 AA / PDF-UA), with a mandatory human verification gate."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "SPEADE Student Partners" }]
+
+# Runtime deps for the F1 skeleton ONLY (config / CLI / validation models).
+# Heavy stage engines (pypdf, pypdfium2, pikepdf, ocrmypdf, docling, torch, ...)
+# are added in optional groups when their stage lands — keeping the base small,
+# per Aaron's small-stack condition.
+dependencies = [
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "typer>=0.12",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+speade = "speade.cli:main"
+
+# Stage engines, installed only when that stage is built (uv: `uv sync --extra detect`).
+# Declared now so versions resolve into one lockfile; NOT installed by default.
+[project.optional-dependencies]
+detect = ["pypdf>=6.14", "pypdfium2>=5.10"]
+# ocr    = ["ocrmypdf>=17.7"]              # Stage 3 (stretch); needs system Tesseract >=5.5
+# tag    = ["pikepdf>=10.9"]               # permissive tagger candidate (Phase-1 spike); bundles QPDF 12.3
+# struct = ["docling-slim>=2.107"]         # structure parser; use -slim to AVOID pulling torch
+# vlm    = ["ollama>=0.6"]                  # Stage 5 client (optional, last); server is a separate Go binary
+# canvas = ["canvasapi>=3.6"]              # Stage 1/7, when API tokens land
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "pip-licenses>=5",
+    "cyclonedx-bom>=4",
+    "pre-commit>=3.7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/speade"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

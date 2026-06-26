@@ -1,0 +1,33 @@
+# SPEADE pipeline configuration — NON-SECRET defaults, safe to commit.
+#
+# Secrets (Canvas / Ally tokens) are NEVER stored here. They are resolved at
+# runtime from the environment / a 0600 file outside the repo (see .env.example).
+#
+# Every stage maps to a swappable implementation selected by name — a swap is a
+# config edit, not a code edit (the tool-agnostic stage interface, plan §1d).
+
+io:
+  # v1 has NO Canvas API access yet, so the whole offline core runs against a
+  # local folder. `canvas` becomes available only once tokens land (token-gated).
+  client: local            # local | canvas
+  local:
+    inbox: ./data/inbox    # drop source PDFs here
+    outbox: ./data/outbox  # remediated copies + sidecars are written here
+  canvas:
+    base_url: "https://canvas.example.edu"   # placeholder; real value set when tokens land
+    # token is NOT here — resolved from env CANVAS_API_TOKEN at runtime
+
+pipeline:
+  # stage_role: implementation_name  (see `speade stages` for available impls)
+  stages:
+    detect: detect         # Stage 2 — born-digital vs scanned (stub in F1)
+    # tag:  pikepdf         # chosen by the Phase-1 tagger spike (pdfix | pikepdf | acrobat)
+    # ocr:  ocrmypdf        # Stage 3 (stretch)
+    # vlm:  qwen2.5-vl-7b   # Stage 5 (optional, built last)
+
+validation:
+  verapdf:
+    profile: ua1           # PDF/UA-1 (F4 harness pins the exact release + image)
+
+audit:
+  log_path: ./data/audit/audit.jsonl
