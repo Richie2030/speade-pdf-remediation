@@ -1,0 +1,3 @@
+# Packages manually cleared from the licence gate -- one package name per line.
+# Use ONLY when a package's licence is verified permissive but its metadata lacks
+# a usable SPDX classifier (so the automated check can't see it). Record why.
