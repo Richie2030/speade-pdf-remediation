@@ -46,12 +46,4 @@ The team develops on both macOSand Windows; production runs on Linux (Boole HPC)
 
 ## Licence
 
-Provisionally **Apache-2.0** (see `LICENSE`) chosen for the explicit patent grant and to keep a future open-source / cross-university release open. This is a recommendation pending team ratification; do not treat it as final.
-Hello 
-testin tesint
-
-testing for a pull request
-
-testing testing 
-
-tesintg testin g
+Provisionally **Apache-2.0** (see `LICENSE`) chosen for the explicit patent grant and to keep a future open-source / cross-university release open. This is a recommendation pending team ratification; do not treat 
