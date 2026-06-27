@@ -20,7 +20,8 @@ io:
 pipeline:
   # stage_role: implementation_name  (see `speade stages` for available impls)
   stages:
-    detect: detect         # Stage 2 — born-digital vs scanned (stub in F1)
+    passthrough: noop      # default; swap to detect once Stage 2 is implemented
+    # detect: detect       # Stage 2 — born-digital vs scanned (implement in stages/detect.py)
     # tag:  pikepdf         # chosen by the Phase-1 tagger spike (pdfix | pikepdf | acrobat)
     # ocr:  ocrmypdf        # Stage 3 (stretch)
     # vlm:  qwen2.5-vl-7b   # Stage 5 (optional, built last)
