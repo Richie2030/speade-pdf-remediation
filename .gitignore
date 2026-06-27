@@ -242,3 +242,19 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
+
+/SPEADE Notes (NO CODE)
+
+# --- SPEADE project ---
+# Secrets — resolved at runtime, NEVER committed (plan SEC1)
+.env
+.env.*
+!.env.example
+*.token
+*.key
+*.pem
+# Pipeline work artifacts (source/remediated PDFs, sidecars, audit logs)
+/data/
+# Generated SBOM / reports
+bom.json
+/reports/
