@@ -1,8 +1,6 @@
-"""Config-driven stage selection.
-
-Maps an implementation name (from `config.yaml`) to a concrete :class:`Stage`.
-Adding an engine = registering it here; selecting one = a config edit, not a
-code edit.
+"""Config-driven stage selection: map an implementation name (from config.yaml)
+to a Stage instance. Registering an engine is a one-line addition here; selecting
+one is a config edit. Define the registry mapping plus get_stage/available here.
 """
 
 from __future__ import annotations
@@ -10,22 +8,6 @@ from __future__ import annotations
 from speade.pipeline.contract import Stage
 from speade.stages.detect import DetectStage
 from speade.stages.noop import NoopStage
-
-_REGISTRY: dict[str, type[Stage]] = {
-    "noop": NoopStage,
-    "detect": DetectStage,
-}
-
-
-def get_stage(impl: str) -> Stage:
-    """Instantiate the stage registered under `impl`."""
-    try:
-        return _REGISTRY[impl]()
-    except KeyError as exc:
-        known = ", ".join(sorted(_REGISTRY))
-        raise KeyError(f"Unknown stage implementation {impl!r}. Known: {known}") from exc
-
-
-def available() -> list[str]:
-    """Names of all registered stage implementations."""
-    return sorted(_REGISTRY)
+from speade.stages.ocr import OcrStage
+from speade.stages.tag import TagStage
+from speade.stages.vlm import VlmStage
