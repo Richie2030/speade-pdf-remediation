@@ -1,3 +1,7 @@
 """Module entry point so `python -m speade` runs the CLI (delegates to cli.main)."""
 
 from speade.cli import main
+
+
+if __name__ == "__main__":
+	main()
