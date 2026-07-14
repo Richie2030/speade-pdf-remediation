@@ -1,8 +1,9 @@
 """Typed configuration loaded from config.yaml + environment.
 
 Define the config schema (IO / pipeline / validation / audit) and a loader here.
-Non-secret config comes from config.yaml; secrets (tokens) come from the
-environment / a git-ignored .env at runtime -- never from config.yaml (rule SEC1).
+v1 is fully offline, so there are no runtime secrets/tokens at all (SEC1) -- if any
+were ever needed they would come from the environment / a git-ignored .env, never
+from config.yaml.
 """
 
 from __future__ import annotations
@@ -15,33 +16,22 @@ from pydantic import BaseModel, Field
 class LocalIOConfig(BaseModel):
     """Local folder-based I/O: read from inbox, write to outbox."""
 
-    inbox: str = Field(default="./data/inbox", description="Source PDF folder")
-    outbox: str = Field(default="./data/outbox", description="Remediated PDF output folder")
-
-
-class CanvasIOConfig(BaseModel):
-    """Canvas REST API I/O (token-gated; not yet implemented)."""
-
-    base_url: str = Field(description="Canvas instance base URL")
-    # token is resolved from env CANVAS_API_TOKEN at runtime, never stored here (SEC1)
+    inbox: Path = Field(default=Path("data/inbox"), description="Source PDF folder")
+    outbox: Path = Field(default=Path("data/outbox"), description="Remediated PDF output folder")
 
 
 class IOConfig(BaseModel):
-    """Document source configuration (local folder or Canvas API)."""
+    """Local folder document I/O (offline; the only source in v1)."""
 
-    client: str = Field(
-        default="local",
-        description="I/O adapter: 'local' (offline) or 'canvas' (when tokens land)",
-    )
+    client: str = Field(default="local", description="Document I/O backend (only 'local' in v1)")
     local: LocalIOConfig = Field(default_factory=LocalIOConfig)
-    canvas: CanvasIOConfig | None = None
 
 
 class PipelineConfig(BaseModel):
     """Stage pipeline configuration (roles -> implementation names)."""
 
     stages: dict[str, str] = Field(
-        default_factory=lambda: {"passthrough": "noop"},
+        default_factory=dict,
         description="stage_role: implementation_name mapping (swappable by config)",
     )
 
@@ -63,14 +53,14 @@ class ValidationConfig(BaseModel):
 class AuditConfig(BaseModel):
     """Append-only audit log configuration."""
 
-    log_path: str = Field(
-        default="./data/audit/audit.jsonl",
-        description="Path to audit log (JSONL format, one entry per run/gate decision)",
+    log_path: Path = Field(
+        default=Path("data/audit/audit.jsonl"),
+        description="Path to audit log (JSONL, one entry per run / gate decision)",
     )
 
 
-class AppConfig(BaseModel):
-    """Root configuration object — the complete app settings."""
+class Config(BaseModel):
+    """Root configuration object -- the complete app settings."""
 
     io: IOConfig = Field(default_factory=IOConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
@@ -78,18 +68,17 @@ class AppConfig(BaseModel):
     audit: AuditConfig = Field(default_factory=AuditConfig)
 
 
-def load_config(config_path: Path) -> AppConfig:
+def load_config(config_path: Path) -> Config:
     """Load and validate the configuration from a YAML file.
 
     Non-secret config comes from `config_path` (usually config.yaml, committed).
-    Secrets (Canvas/Ally tokens) are resolved from the environment at runtime
-    and never stored in the config file (rule SEC1).
+    v1 is fully offline: there are no runtime secrets to resolve (SEC1).
 
     Args:
         config_path: path to config.yaml (or equivalent).
 
     Returns:
-        An `AppConfig` instance with all defaults filled in.
+        A `Config` instance with all defaults filled in.
 
     Raises:
         FileNotFoundError: if the config file does not exist.
@@ -98,10 +87,10 @@ def load_config(config_path: Path) -> AppConfig:
     """
     import yaml
 
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(config_path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
     try:
-        return AppConfig(**data)
+        return Config(**data)
     except Exception as exc:
         raise ValueError(f"Invalid configuration in {config_path}: {exc}") from exc

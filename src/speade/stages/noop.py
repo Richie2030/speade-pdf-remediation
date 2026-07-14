@@ -10,19 +10,13 @@ from speade.pipeline.contract import Sidecar, StageResult
 
 
 class NoopStage:
-    """Passthrough: change nothing, just record that this stage ran.
-
-    The worked reference every other stage copies. It satisfies the Stage protocol
-    structurally (a matching `run`) -- no base class to inherit. The registry maps the
-    config name "noop" to this class.
-    """
-
     name = "noop"
 
     def run(self, pdf: Path, sidecar: Sidecar) -> StageResult:
-        # The runner already works on a COPY, so a stage never touches the original.
-        # Noop goes further and touches nothing at all: no file I/O, bytes unchanged.
-        sidecar.stages_applied.append(self.name)
-        # TODO(design): mutate the passed sidecar in place (as here) vs return a copy?
-        # If contract.Sidecar grows an `applied()` helper, use sidecar.applied(self.name).
-        return StageResult(stage=self.name, output=pdf, sidecar=sidecar, changed=False)
+        sidecar.applied(self.name)  # record that noop ran
+        return StageResult(
+            stage=self.name,  # who produced this
+            output=pdf,  # same bytes in/out -- noop changes nothing
+            sidecar=sidecar,  # sidecar that just updated, threaded onto the next stage
+            changed=False,  # this means the PDF's bytes wont be changed if "False"
+        )

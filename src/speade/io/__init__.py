@@ -1,1 +1,1 @@
-"""Document I/O adapters (local folder now; Canvas REST when tokens land)."""
+"""Document I/O for the offline core: a local folder reader (inbox -> outbox)."""
