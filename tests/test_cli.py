@@ -1,0 +1,90 @@
+"""Tests for the CLI (src/speade/cli.py) via Typer's CliRunner."""
+
+from __future__ import annotations
+
+from typer.testing import CliRunner
+
+from speade.cli import app
+
+cli = CliRunner()
+PDF_BYTES = b"%PDF-1.7\n%%EOF\n"
+
+
+def test_stages_lists_available_impls():
+    result = cli.invoke(app, ["stages"])
+    assert result.exit_code == 0
+    assert "noop" in result.stdout
+
+
+def test_run_remediates_one_pdf_end_to_end(tmp_path):
+    pdf = tmp_path / "sample.pdf"
+    pdf.write_bytes(PDF_BYTES)
+    outbox = tmp_path / "outbox"
+    audit = tmp_path / "audit" / "audit.jsonl"
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "io:\n"
+        "  client: local\n"
+        "  local:\n"
+        f"    inbox: {(tmp_path / 'inbox').as_posix()}\n"
+        f"    outbox: {outbox.as_posix()}\n"
+        "pipeline:\n"
+        "  stages:\n"
+        "    passthrough: noop\n"
+        "audit:\n"
+        f"  log_path: {audit.as_posix()}\n"
+    )
+
+    result = cli.invoke(app, ["run", str(pdf), "--config", str(config)])
+
+    assert result.exit_code == 0, result.output
+    assert (outbox / "sample.pdf").read_bytes() == PDF_BYTES  # remediated copy written
+    assert pdf.read_bytes() == PDF_BYTES  # original untouched
+    assert audit.is_file()  # audit line recorded
+
+
+def test_verify_records_the_human_gate_decision(tmp_path, monkeypatch):
+    from speade.pipeline.contract import ApprovalStatus, Sidecar
+    from speade.validation import verapdf
+    from speade.validation.verapdf import VeraResult
+
+    # Arrange an outbox pdf + sidecar, as `run` would have left them.
+    out_pdf = tmp_path / "sample.pdf"
+    out_pdf.write_bytes(PDF_BYTES)
+    sidecar = Sidecar(source_path="inbox/sample.pdf", source_sha256="abc", output_sha256="def")
+    sidecar_path = out_pdf.with_name("sample.pdf.sidecar.json")
+    sidecar_path.write_text(sidecar.model_dump_json(indent=2), encoding="utf-8")
+
+    audit = tmp_path / "audit" / "audit.jsonl"
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"validation:\n  verapdf:\n    profile: ua1\naudit:\n  log_path: {audit.as_posix()}\n"
+    )
+
+    # veraPDF mocked -> no Docker needed; the human gate is what we're testing.
+    monkeypatch.setattr(
+        verapdf,
+        "validate",
+        lambda pdf, profile="ua1", cli=None: VeraResult(passed=True, profile=profile),
+    )
+
+    result = cli.invoke(
+        app, ["verify", str(out_pdf), "--reviewer", "Alice", "--approve", "--config", str(config)]
+    )
+
+    assert result.exit_code == 0, result.output
+    updated = Sidecar.model_validate_json(sidecar_path.read_text())
+    assert updated.approval.status == ApprovalStatus.APPROVED
+    assert updated.approval.reviewer == "Alice"
+    assert updated.approval.decided_at is not None
+    assert updated.verapdf_passed is True
+    assert audit.is_file()  # verify event recorded
+
+
+def test_verify_requires_exactly_one_decision(tmp_path):
+    out_pdf = tmp_path / "sample.pdf"
+    out_pdf.write_bytes(PDF_BYTES)
+    out_pdf.with_name("sample.pdf.sidecar.json").write_text("{}")
+    # Neither --approve nor --reject is an error (no silent default at the gate).
+    result = cli.invoke(app, ["verify", str(out_pdf), "--reviewer", "Alice"])
+    assert result.exit_code != 0
