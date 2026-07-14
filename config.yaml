@@ -1,34 +1,37 @@
 # SPEADE pipeline configuration — NON-SECRET defaults, safe to commit.
 #
-# Secrets (Canvas / Ally tokens) are NEVER stored here. They are resolved at
+# Secrets (any runtime tokens) are NEVER stored here. They are resolved at
 # runtime from the environment / a 0600 file outside the repo (see .env.example).
 #
 # Every stage maps to a swappable implementation selected by name — a swap is a
 # config edit, not a code edit (the tool-agnostic stage interface, plan §1d).
 
 io:
-  # v1 has NO Canvas API access yet, so the whole offline core runs against a
-  # local folder. `canvas` becomes available only once tokens land (token-gated).
-  client: local            # local | canvas
+  # The offline core runs against a local folder -- the only document source.
   local:
     inbox: ./data/inbox    # drop source PDFs here
     outbox: ./data/outbox  # remediated copies + sidecars are written here
-  canvas:
-    base_url: "https://canvas.example.edu"   # placeholder; real value set when tokens land
-    # token is NOT here — resolved from env CANVAS_API_TOKEN at runtime
 
 pipeline:
   # stage_role: implementation_name  (see `speade stages` for available impls)
   stages:
-    passthrough: noop      # default; swap to detect once Stage 2 is implemented
-    # detect: detect       # Stage 2 — born-digital vs scanned (implement in stages/detect.py)
-    # tag:  pikepdf         # chosen by the Phase-1 tagger spike (pdfix | pikepdf | acrobat)
-    # ocr:  ocrmypdf        # Stage 3 (stretch)
-    # vlm:  qwen2.5-vl-7b   # Stage 5 (optional, built last)
+    passthrough: noop      # default (offline, runs anywhere; no external tools)
+    # Real born-digital remediation pipeline — replace the line above with these,
+    # in order (stages run top-to-bottom):
+    #   detect: detect      # Stage 2 — born-digital vs scanned   (needs: uv sync --extra detect)
+    #   ocr: ocr            # Stage 3 (stretch) — scanned only     (needs: --extra ocr + system Tesseract)
+    #   tag: tag            # Stage 4 — PDF/UA tagging via OpenDataLoader
+    #                       #   (needs: --extra tag + system Java 11+ + the opendataloader-pdf CLI)
+    # (no alt-text/VLM stage — ruled out; figure alt-text is human-authored at the gate)
 
 validation:
   verapdf:
     profile: ua1           # PDF/UA-1 (F4 harness pins the exact release + image)
+    # Runner preference: `path` below if set -> `verapdf` on PATH (the plain Java
+    # CLI -- no Docker; the JRE is already required for the tag engine) -> the
+    # pinned Docker image -> fail closed. Set `path` only if veraPDF is installed
+    # somewhere PATH can't see (keep machine-specific paths out of commits).
+    # path: C:/verapdf/verapdf.bat
 
 audit:
   log_path: ./data/audit/audit.jsonl

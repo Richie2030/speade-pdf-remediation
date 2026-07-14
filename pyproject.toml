@@ -9,7 +9,7 @@ license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "SPEADE Student Partners" }]
 
 # Runtime deps for the F1 skeleton ONLY (config / CLI / validation models).
-# Heavy stage engines (pypdf, pypdfium2, pikepdf, ocrmypdf, docling, torch, ...)
+# Heavy stage engines (pypdf, pikepdf, ocrmypdf, docling, torch, ...)
 # are added in optional groups when their stage lands — keeping the base small,
 # per Aaron's small-stack condition.
 dependencies = [
@@ -25,18 +25,21 @@ speade = "speade.cli:main"
 # Stage engines, installed only when that stage is built (uv: `uv sync --extra detect`).
 # Declared now so versions resolve into one lockfile; NOT installed by default.
 [project.optional-dependencies]
-detect = ["pypdf>=6.14", "pypdfium2>=5.10"]
+detect = ["pypdf>=6.14"]
+# PDF/UA conformance finish (MarkInfo + pdfuaid) for the tag stage. The tagging
+# ENGINE (OpenDataLoader) is a system/subprocess tool + JRE, NOT a pip dep.
+tag = ["pikepdf>=10.9"]                    # MPL-2.0 (weak-copyleft, permitted); bundles QPDF
 # ocr    = ["ocrmypdf>=17.7"]              # Stage 3 (stretch); needs system Tesseract >=5.5
-# tag    = ["pikepdf>=10.9"]               # permissive tagger candidate (Phase-1 spike); bundles QPDF 12.3
 # struct = ["docling-slim>=2.107"]         # structure parser; use -slim to AVOID pulling torch
-# vlm    = ["ollama>=0.6"]                  # Stage 5 client (optional, last); server is a separate Go binary
-# canvas = ["canvasapi>=3.6"]              # Stage 1/7, when API tokens land
+# NOTE: no LLM/VLM client (ollama, etc.) — the alt-text stage is ruled out; alt-text is human-authored.
 
 [dependency-groups]
 dev = [
     "pytest>=8",
     "ruff>=0.6",
-    "pip-licenses>=5",
+    # pypdf is also a `detect` runtime extra; listed here so `uv sync && pytest`
+    # exercises test_detect without needing `--extra detect`.
+    "pypdf>=6.14",
     "cyclonedx-bom>=4",
     "pre-commit>=3.7",
 ]
