@@ -42,6 +42,10 @@ class VeraPDFConfig(BaseModel):
     profile: str = Field(
         default="ua1", description="PDF/UA compliance profile (e.g., 'ua1' for PDF/UA-1)"
     )
+    path: str | None = Field(
+        default=None,
+        description="Explicit veraPDF CLI path; default None auto-discovers (PATH, then Docker)",
+    )
 
 
 class ValidationConfig(BaseModel):

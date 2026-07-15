@@ -48,6 +48,13 @@ class TagStage:
     name = "tag"
 
     def run(self, pdf: Path, sidecar: Sidecar) -> StageResult:
+        # unreadable inputs (encrypted / corrupt -- flagged by detect) cannot be
+        # tagged; they flow to the gate untouched, reason already on the sidecar.
+        if any(flag.startswith("unreadable-") for flag in sidecar.flags):
+            sidecar.flags.append("tag-skipped-unreadable")
+            sidecar.applied(self.name)
+            return StageResult(stage=self.name, output=pdf, sidecar=sidecar, changed=False)
+
         # never clobber an existing structure tree (do-not-degrade): an already
         # tagged PDF skips the engine and flows to the gate untouched.
         if sidecar.already_tagged:
@@ -62,11 +69,17 @@ class TagStage:
                 changed=False,
             )
 
-        # tagging needs real text, a scanned/unknown doc must be OCR'd first.
-        if sidecar.route in (Route.SCANNED, Route.UNKNOWN):
+        # tagging needs real text: a scanned (image-only) doc must be OCR'd first.
+        if sidecar.route == Route.SCANNED:
             sidecar.flags.append("tag-skipped-needs-ocr")  # Goes to OCR as tagging needs it
             sidecar.applied(self.name)
             return StageResult(stage=self.name, output=pdf, sidecar=sidecar, changed=False)
+
+        # policy: an UNKNOWN (mixed text+image) doc is tagged anyway -- its real
+        # text pages gain structure now; any image-only pages surface at the gate,
+        # where this flag tells the reviewer to check coverage.
+        if sidecar.route == Route.UNKNOWN:
+            sidecar.flags.append("tag-ran-on-unknown-route")
 
         out = pdf.with_name(f"{pdf.stem}.tagged.pdf")  # NEW file, never mutate input
         self._tag(pdf, out)

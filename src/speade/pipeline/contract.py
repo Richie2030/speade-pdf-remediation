@@ -30,7 +30,7 @@ class Route(StrEnum):
     BORN_DIGITAL = "born_digital"  # real text -> straight to tagging
     SCANNED = "scanned"  # image-only -> OCR before tagging
     # UNKNOWN is kept as a distinct value so human reviewers can see the ambiguity.
-    UNKNOWN = "unknown"  # ambiguous/mixed -> treat conservatively as scanned
+    UNKNOWN = "unknown"  # ambiguous/mixed -> tagged anyway + flagged for the reviewer
 
 
 class ApprovalStatus(StrEnum):

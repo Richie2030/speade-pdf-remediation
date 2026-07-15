@@ -2,8 +2,10 @@
 
 Decide how a PDF flows downstream: a born-digital PDF (real text) goes straight
 to tagging; a scanned (image-only) PDF must go through OCR first; ambiguous/mixed
-routes conservatively to scanned. Heuristic: per-page text-char count (pypdf).
-Deps: `uv sync --extra detect`.
+stays UNKNOWN (tagged anyway downstream, with a reviewer flag). Unreadable inputs
+(encrypted / corrupt) are never crashed on or guessed at: the run completes with
+the reason on the sidecar (`unreadable-*` flag) and the human gate decides.
+Heuristic: per-page text-char count (pypdf). Deps: `uv sync --extra detect`.
 """
 
 from __future__ import annotations
@@ -20,9 +22,29 @@ class DetectStage:
 
     # passthrough for the bytes, exactly like noop: detect only reads.
     def run(self, pdf: Path, sidecar: Sidecar) -> StageResult:
-        reader = pypdf.PdfReader(pdf)  # open once; used by both helpers
-        sidecar.route = self._classify(reader)
-        sidecar.already_tagged = self._is_tagged(reader)
+        try:
+            reader = pypdf.PdfReader(pdf)  # open once; used by both helpers
+            if reader.is_encrypted:
+                # policy: never guess passwords (not even the empty one). Reject
+                # with the reason on the sidecar; downstream stages skip on the
+                # `unreadable-` prefix and the human gate decides.
+                sidecar.route = Route.UNKNOWN
+                sidecar.flags.append("unreadable-encrypted-password-required")
+            else:
+                sidecar.route = self._classify(reader)
+                sidecar.already_tagged = self._is_tagged(reader)
+        except (pypdf.errors.DependencyError, pypdf.errors.FileNotDecryptedError):
+            # encryption surfacing as an exception instead of is_encrypted: pypdf
+            # auto-tries the empty password on open -- AES needs the optional
+            # `cryptography` package (DependencyError), and a real password fails
+            # outright (FileNotDecryptedError/WrongPassword). Same reject policy.
+            sidecar.route = Route.UNKNOWN
+            sidecar.flags.append("unreadable-encrypted-password-required")
+        except Exception as exc:  # pypdf raises many types on malformed files
+            # policy: a corrupt/malformed PDF is rejected with a clean reason on
+            # the sidecar, not a stack trace -- the run still reaches the gate.
+            sidecar.route = Route.UNKNOWN
+            sidecar.flags.append(f"unreadable-corrupt: {str(exc)[:80]}")
         sidecar.applied(self.name)
         return StageResult(
             stage=self.name,
@@ -58,8 +80,7 @@ class DetectStage:
         return "/StructTreeRoot" in reader.root_object
 
 
-# NOTE: pypdf.PdfReader(pdf) raises if the file is corrupt or password-encrypted.
-# Right now that exception propagates up and crashes the run -- arguably fine for
-# v1 (better to fail loudly than mislabel), but eventually catch it and route to
-# UNKNOWN + add a flags note like "unreadable" (the kind of non-fatal signal the
-# Sidecar.flags field exists for). Worth a mental note; not worth code today.
+# NOTE: unreadable handling above intentionally catches broad Exception -- pypdf
+# raises many types on hostile input (PdfReadError, DependencyError, ValueError...)
+# and ANY of them means the same thing here: this file cannot be classified, so it
+# goes to the human gate with an `unreadable-corrupt` reason instead of a crash.
