@@ -21,7 +21,7 @@ def test_loads_the_committed_config_yaml():
     assert cfg.io.client == "local"
     assert cfg.io.local.inbox == Path("data/inbox")
     assert cfg.io.local.outbox == Path("data/outbox")
-    assert cfg.pipeline.stages == {"passthrough": "noop"}
+    assert cfg.pipeline.stages == {"detect": "detect", "ocr": "ocr", "tag": "tag"}
     assert cfg.validation.verapdf.profile == "ua1"
     assert cfg.audit.log_path == Path("data/audit/audit.jsonl")
 

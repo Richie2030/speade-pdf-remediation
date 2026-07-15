@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Optional-dependency groups that ship with the product (add e.g. "ocr" when that
 # stage lands). Dev/build groups are excluded via `uv export --no-dev`.
-SHIPPING_EXTRAS = ("detect", "tag")
+SHIPPING_EXTRAS = ("detect", "tag", "ocr", "desktop")
 
 # Canonical package names to exempt -- e.g. a dual-licensed dep that reports a GPL
 # classifier but is used under its permissive option. Keep short; justify each entry.

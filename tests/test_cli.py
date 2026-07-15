@@ -13,7 +13,9 @@ PDF_BYTES = b"%PDF-1.7\n%%EOF\n"
 def test_stages_lists_available_impls():
     result = cli.invoke(app, ["stages"])
     assert result.exit_code == 0
-    assert "noop" in result.stdout
+    assert "detect" in result.stdout
+    assert "ocr" in result.stdout
+    assert "tag" in result.stdout
 
 
 def test_run_remediates_one_pdf_end_to_end(tmp_path):
@@ -41,6 +43,34 @@ def test_run_remediates_one_pdf_end_to_end(tmp_path):
     assert (outbox / "sample.pdf").read_bytes() == PDF_BYTES  # remediated copy written
     assert pdf.read_bytes() == PDF_BYTES  # original untouched
     assert audit.is_file()  # audit line recorded
+
+
+def test_run_batch_sweeps_a_folder(tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    for name in ("a.pdf", "b.pdf"):
+        (inbox / name).write_bytes(PDF_BYTES)
+    outbox = tmp_path / "outbox"
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "io:\n"
+        "  local:\n"
+        f"    inbox: {inbox.as_posix()}\n"
+        f"    outbox: {outbox.as_posix()}\n"
+        "pipeline:\n"
+        "  stages:\n"
+        "    passthrough: noop\n"
+        "audit:\n"
+        f"  log_path: {(tmp_path / 'audit' / 'audit.jsonl').as_posix()}\n"
+    )
+
+    result = cli.invoke(app, ["run-batch", "--config", str(config)])
+
+    assert result.exit_code == 0, result.output
+    assert "2/2 processed" in result.stdout
+    for name in ("a.pdf", "b.pdf"):
+        assert (outbox / name).read_bytes() == PDF_BYTES
+        assert (outbox / f"{name}.sidecar.json").is_file()
 
 
 def test_verify_records_the_human_gate_decision(tmp_path, monkeypatch):

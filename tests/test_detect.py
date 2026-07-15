@@ -151,3 +151,40 @@ def test_thresholds_are_boundary_inclusive(tmp_path):
     sidecar = Sidecar(source_path="doc.pdf", source_sha256="0")
 
     assert DetectStage().run(pdf, sidecar).sidecar.route == Route.BORN_DIGITAL
+
+
+def test_encrypted_pdf_is_rejected_with_reason(tmp_path, monkeypatch):
+    # P1.4 policy: never guess passwords -- no crash, no classification; the
+    # reason lands on the sidecar and the human gate decides.
+    from speade.stages import detect as detect_module
+
+    class FakeEncryptedReader:
+        is_encrypted = True
+
+    monkeypatch.setattr(detect_module.pypdf, "PdfReader", lambda p: FakeEncryptedReader())
+
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.7\n%%EOF\n")
+    sidecar = Sidecar(source_path="doc.pdf", source_sha256="0")
+
+    result = DetectStage().run(pdf, sidecar)
+
+    assert result.sidecar.route == Route.UNKNOWN
+    assert "unreadable-encrypted-password-required" in result.sidecar.flags
+    assert result.sidecar.stages_applied == ["detect"]
+    assert result.changed is False
+    assert result.output == pdf
+
+
+def test_corrupt_pdf_is_rejected_with_reason(tmp_path):
+    # P1.4 policy: a malformed file gets a clean sidecar reason, not a stack trace.
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4\nthis is not a real pdf body")  # no xref/trailer
+    sidecar = Sidecar(source_path="doc.pdf", source_sha256="0")
+
+    result = DetectStage().run(pdf, sidecar)
+
+    assert result.sidecar.route == Route.UNKNOWN
+    assert any(flag.startswith("unreadable-corrupt") for flag in result.sidecar.flags)
+    assert result.sidecar.stages_applied == ["detect"]
+    assert result.changed is False
