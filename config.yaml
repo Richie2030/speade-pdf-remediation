@@ -14,14 +14,14 @@ io:
 
 pipeline:
   # stage_role: implementation_name  (see `speade stages` for available impls)
+  # Stages run top-to-bottom. Needs: uv sync --extra detect --extra tag, plus
+  # system Java 11+ and the opendataloader-pdf CLI (see docs/runbook when it lands).
   stages:
-    passthrough: noop      # default (offline, runs anywhere; no external tools)
-    # Real born-digital remediation pipeline — replace the line above with these,
-    # in order (stages run top-to-bottom):
-    #   detect: detect      # Stage 2 — born-digital vs scanned   (needs: uv sync --extra detect)
-    #   ocr: ocr            # Stage 3 (stretch) — scanned only     (needs: --extra ocr + system Tesseract)
-    #   tag: tag            # Stage 4 — PDF/UA tagging via OpenDataLoader
-    #                       #   (needs: --extra tag + system Java 11+ + the opendataloader-pdf CLI)
+    detect: detect         # born-digital vs scanned -> sidecar.route
+    ocr: ocr               # scanned docs only — Tesseract text layer (--extra ocr
+    #                      #   + system Tesseract; missing engine flags, never crashes)
+    tag: tag               # PDF/UA tagging via OpenDataLoader + pikepdf finish
+    # passthrough: noop    # tool-free fallback: swap the stages above for this line
     # (no alt-text/VLM stage — ruled out; figure alt-text is human-authored at the gate)
 
 validation:

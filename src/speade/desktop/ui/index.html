@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SPEADE Review</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>SPEADE <span>PDF remediation &mdash; human verification gate</span></h1>
+    <div id="paths" class="muted"></div>
+  </header>
+
+  <div class="toolbar">
+    <button id="add">Add PDFs&hellip;</button>
+    <button id="run" class="primary">Run batch</button>
+    <button id="refresh">Refresh queue</button>
+    <button id="open-outbox">Open outbox folder</button>
+    <span id="status" class="muted" role="status" aria-live="polite"></span>
+  </div>
+
+  <main>
+    <aside id="queue" aria-label="Review queue"></aside>
+
+    <section id="detail">
+      <div id="detail-empty" class="empty">
+        Drop PDFs into the inbox (or <b>Add PDFs&hellip;</b>), press
+        <b>Run batch</b>, then select a draft from the queue to review it.
+      </div>
+
+      <div id="detail-body" hidden>
+        <div class="detail-head">
+          <h2 id="doc-name"></h2>
+          <div>
+            <button id="open-viewer">Open in viewer</button>
+          </div>
+        </div>
+
+        <dl id="facts"></dl>
+        <div id="doc-flags"></div>
+
+        <div id="preview-wrap">
+          <embed id="preview" type="application/pdf">
+          <div id="preview-note" class="muted" hidden></div>
+        </div>
+
+        <div class="gate">
+          <div class="gate-title">Human gate &mdash; the decision is yours, not the machine's</div>
+          <label for="reviewer">Reviewer</label>
+          <input id="reviewer" type="text" placeholder="student number" autocomplete="off">
+          <button id="approve" class="approve">Approve</button>
+          <button id="reject" class="reject">Reject</button>
+          <div id="gate-result" class="muted"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- api.js is THE seam: the only file that knows how the UI reaches Python. -->
+  <script src="api.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

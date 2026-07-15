@@ -29,7 +29,12 @@ detect = ["pypdf>=6.14"]
 # PDF/UA conformance finish (MarkInfo + pdfuaid) for the tag stage. The tagging
 # ENGINE (OpenDataLoader) is a system/subprocess tool + JRE, NOT a pip dep.
 tag = ["pikepdf>=10.9"]                    # MPL-2.0 (weak-copyleft, permitted); bundles QPDF
-# ocr    = ["ocrmypdf>=17.7"]              # Stage 3 (stretch); needs system Tesseract >=5.5
+# Stage 3 (stretch): pypdfium2 renders pages (BSD/Apache, self-contained wheel),
+# Tesseract OCRs them (SYSTEM install, arms-length subprocess), pikepdf merges.
+ocr = ["pikepdf>=10.9", "pypdfium2>=4"]
+# The desktop review client: a pywebview (BSD) native window hosting ui/ over
+# the js_api bridge -- no web framework, no server (frontend-delivery record).
+desktop = ["pywebview>=5.1"]
 # struct = ["docling-slim>=2.107"]         # structure parser; use -slim to AVOID pulling torch
 # NOTE: no LLM/VLM client (ollama, etc.) — the alt-text stage is ruled out; alt-text is human-authored.
 
