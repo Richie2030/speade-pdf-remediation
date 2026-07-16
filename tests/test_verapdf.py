@@ -75,7 +75,9 @@ def _run_recorder(monkeypatch, report, returncode=0):
         seen["cmd"] = cmd
         return fake
 
-    monkeypatch.setattr(verapdf.subprocess, "run", record)
+    # verapdf shells out via speade.subproc (the hidden-console wrapper), which
+    # forwards to stdlib subprocess.run -- patch that single choke point.
+    monkeypatch.setattr(subprocess, "run", record)
     return seen
 
 
@@ -130,7 +132,7 @@ def test_validate_fails_closed_with_no_runner(monkeypatch):
     def boom(*args, **kwargs):  # pragma: no cover - only fires on regression
         raise AssertionError("no subprocess may run when no runner exists")
 
-    monkeypatch.setattr(verapdf.subprocess, "run", boom)
+    monkeypatch.setattr(subprocess, "run", boom)
 
     result = verapdf.validate(Path("work/sample.pdf"))
     assert result.passed is False

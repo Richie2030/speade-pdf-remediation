@@ -70,7 +70,9 @@ def test_run_batch_sweeps_a_folder(tmp_path):
     assert "2/2 processed" in result.stdout
     for name in ("a.pdf", "b.pdf"):
         assert (outbox / name).read_bytes() == PDF_BYTES
-        assert (outbox / f"{name}.sidecar.json").is_file()
+        # sidecars land in the configured folder (default: data/sidecars beside
+        # the config), keeping the outbox deliverables-only.
+        assert (tmp_path / "data" / "sidecars" / f"{name}.sidecar.json").is_file()
 
 
 def test_verify_records_the_human_gate_decision(tmp_path, monkeypatch):
@@ -78,11 +80,14 @@ def test_verify_records_the_human_gate_decision(tmp_path, monkeypatch):
     from speade.validation import verapdf
     from speade.validation.verapdf import VeraResult
 
-    # Arrange an outbox pdf + sidecar, as `run` would have left them.
+    # Arrange an outbox pdf + sidecar, as `run` would have left them: the pdf
+    # anywhere, its sidecar in the configured sidecars folder (default
+    # data/sidecars, resolved beside the config file).
     out_pdf = tmp_path / "sample.pdf"
     out_pdf.write_bytes(PDF_BYTES)
     sidecar = Sidecar(source_path="inbox/sample.pdf", source_sha256="abc", output_sha256="def")
-    sidecar_path = out_pdf.with_name("sample.pdf.sidecar.json")
+    sidecar_path = tmp_path / "data" / "sidecars" / "sample.pdf.sidecar.json"
+    sidecar_path.parent.mkdir(parents=True)
     sidecar_path.write_text(sidecar.model_dump_json(indent=2), encoding="utf-8")
 
     audit = tmp_path / "audit" / "audit.jsonl"

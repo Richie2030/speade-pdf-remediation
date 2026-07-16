@@ -19,7 +19,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from speade.audit.log import append_event
+from speade.audit.log import append_event, sha256_file
 from speade.config import load_config
 from speade.pipeline import registry, runner
 from speade.pipeline.contract import Approval, ApprovalStatus, Sidecar
@@ -35,6 +35,7 @@ class Workspace(BaseModel):
     stages: dict[str, str]  # stage_role -> implementation name, in pipeline order
     inbox: Path
     outbox: Path
+    sidecars: Path  # per-document records live here, keeping the outbox deliverables-only
     audit_log: Path
     verapdf_profile: str
     verapdf_cli: str | None
@@ -63,21 +64,31 @@ class QueueItem(BaseModel):
 
 
 def workspace(config_path: Path = DEFAULT_CONFIG_PATH) -> Workspace:
-    """Load `config_path` and resolve its relative paths against its own folder."""
+    """Load `config_path`, resolve its relative paths against its own folder,
+    and ensure the data folders exist."""
     config = load_config(config_path)
     base = Path(config_path).resolve().parent
 
     def resolve(path: Path) -> Path:
         return path if path.is_absolute() else (base / path).resolve()
 
-    return Workspace(
+    ws = Workspace(
         stages=dict(config.pipeline.stages),
         inbox=resolve(config.io.local.inbox),
         outbox=resolve(config.io.local.outbox),
+        sidecars=resolve(config.io.local.sidecars),
         audit_log=resolve(config.audit.log_path),
         verapdf_profile=config.validation.verapdf.profile,
         verapdf_cli=config.validation.verapdf.path,
     )
+    # the folders are part of the workspace contract: every client (CLI, exe)
+    # finds them ready at startup, so a fresh install has an inbox to drop
+    # files into before the first run -- nothing materialises lazily.
+    ws.inbox.mkdir(parents=True, exist_ok=True)
+    ws.outbox.mkdir(parents=True, exist_ok=True)
+    ws.sidecars.mkdir(parents=True, exist_ok=True)
+    ws.audit_log.parent.mkdir(parents=True, exist_ok=True)
+    return ws
 
 
 def stage_mapping(config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, str]:
@@ -93,7 +104,7 @@ def run_one(pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> Sidecar:
     """
     ws = workspace(config_path)
     stages = [registry.get_stage(impl) for impl in ws.stages.values()]
-    return runner.run(pdf, stages, ws.outbox, ws.audit_log)
+    return runner.run(pdf, stages, ws.outbox, ws.audit_log, sidecar_dir=ws.sidecars)
 
 
 def run_batch(
@@ -109,7 +120,7 @@ def run_batch(
     items: list[BatchItem] = []
     for pdf in sorted(p for p in src_dir.glob("*.pdf") if p.is_file()):
         try:
-            sidecar = runner.run(pdf, stages, ws.outbox, ws.audit_log)
+            sidecar = runner.run(pdf, stages, ws.outbox, ws.audit_log, sidecar_dir=ws.sidecars)
             items.append(BatchItem(file=pdf.name, ok=True, sidecar=sidecar))
         except Exception as exc:  # per-file isolation: record, continue the sweep
             items.append(
@@ -122,7 +133,7 @@ def list_queue(config_path: Path = DEFAULT_CONFIG_PATH) -> list[QueueItem]:
     """Summarise every outbox draft (its sidecar) for a review-queue listing."""
     ws = workspace(config_path)
     items: list[QueueItem] = []
-    for side_path in sorted(ws.outbox.glob("*.pdf.sidecar.json")):
+    for side_path in sorted(ws.sidecars.glob("*.pdf.sidecar.json")):
         pdf_name = side_path.name.removesuffix(".sidecar.json")
         try:
             sidecar = Sidecar.model_validate_json(side_path.read_text(encoding="utf-8"))
@@ -158,10 +169,19 @@ def decide(
     sidecar, which is also persisted and audit-logged.
     """
     ws = workspace(config_path)
-    side_path = pdf.with_name(pdf.name + ".sidecar.json")
+    if not pdf.is_file():
+        # a decision needs bytes to pin -- fail clearly instead of recording a
+        # verdict about a document that is not there.
+        raise FileNotFoundError(f"PDF not found: {pdf}")
+    side_path = ws.sidecars / (pdf.name + ".sidecar.json")
     if not side_path.is_file():
-        raise FileNotFoundError(f"sidecar not found next to the PDF: {side_path}")
+        raise FileNotFoundError(f"sidecar not found for this PDF: {side_path}")
     sidecar = Sidecar.model_validate_json(side_path.read_text(encoding="utf-8"))
+
+    # the approval pins the bytes as they are NOW -- the reviewer may have
+    # corrected the draft (e.g. in Acrobat) since the pipeline wrote it, so
+    # re-fingerprint before recording the decision: approved == shipped.
+    sidecar.output_sha256 = sha256_file(pdf)
 
     vera = verapdf.validate(pdf, ws.verapdf_profile, cli=ws.verapdf_cli)
     sidecar.verapdf_passed = vera.passed

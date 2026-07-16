@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from speade import subproc
 from speade.pipeline.contract import Route, Sidecar, StageResult
 
 # Arms-length tagging engine. It is a Java CLI (system install, like veraPDF's JRE),
@@ -82,21 +83,25 @@ class TagStage:
             sidecar.flags.append("tag-ran-on-unknown-route")
 
         out = pdf.with_name(f"{pdf.stem}.tagged.pdf")  # NEW file, never mutate input
-        self._tag(pdf, out)
+        # dc:title is what viewers display (DisplayDocTitle): use the ORIGINAL
+        # filename from the sidecar, not the working copy's stem (post-OCR the
+        # working file is `X.ocr.pdf`, which must not become the visible title).
+        self._tag(pdf, out, title=Path(sidecar.source_path).stem)
 
         sidecar.applied(self.name)
         return StageResult(stage=self.name, output=out, sidecar=sidecar, changed=True)
 
-    def _tag(self, pdf: Path, out: Path) -> None:
+    def _tag(self, pdf: Path, out: Path, title: str) -> None:
         """Auto-tag `pdf` with OpenDataLoader (arms-length CLI), then stamp the
-        PDF/UA-1 identifier, writing the result to `out`. Fails loud (raises) if the
-        engine is missing or produces nothing -- the runner treats that as a failure.
+        PDF/UA-1 identifier + `title`, writing the result to `out`. Fails loud
+        (raises) if the engine is missing or produces nothing -- the runner treats
+        that as a failure.
         """
         with tempfile.TemporaryDirectory(prefix="speade_tag_") as tmp:
             outdir = Path(tmp)
             cmd = [part.format(input=str(pdf), outdir=str(outdir)) for part in OPENDATALOADER_CMD]
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_TAG_TIMEOUT_S)
+                proc = subproc.run(cmd, capture_output=True, text=True, timeout=_TAG_TIMEOUT_S)
             except FileNotFoundError as exc:
                 raise RuntimeError(
                     "opendataloader-pdf not found on PATH -- install the tagging engine "
@@ -119,7 +124,7 @@ class TagStage:
                     "flags against `opendataloader-pdf --help`."
                 )
 
-            self._finish_pdf_ua(produced[0], out, title=pdf.stem)
+            self._finish_pdf_ua(produced[0], out, title=title)
 
     @staticmethod
     def _finish_pdf_ua(tagged: Path, out: Path, title: str, lang: str = DEFAULT_LANG) -> None:

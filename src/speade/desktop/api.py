@@ -15,11 +15,10 @@ import base64
 import getpass
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
-from speade import service
+from speade import service, subproc
 from speade.service import DEFAULT_CONFIG_PATH
 
 # Above this size the embedded preview is refused (a data: URI would bloat 4/3x
@@ -32,9 +31,9 @@ def _open_native(path: Path) -> None:
     if sys.platform == "win32":
         os.startfile(path)  # noqa: S606 - deliberate: hand the doc to the system viewer
     elif sys.platform == "darwin":
-        subprocess.run(["open", str(path)], check=False)
+        subproc.run(["open", str(path)], check=False)
     else:
-        subprocess.run(["xdg-open", str(path)], check=False)
+        subproc.run(["xdg-open", str(path)], check=False)
 
 
 class SpeadeApi:

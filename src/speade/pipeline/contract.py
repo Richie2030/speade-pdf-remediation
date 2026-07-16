@@ -49,7 +49,9 @@ class Approval(BaseModel):
     status: ApprovalStatus = ApprovalStatus.DRAFT
     reviewer: str | None = None  # who signed off (set by `speade verify`)
     decided_at: datetime | None = None
-    # TODO: decide whether the sign-off should also pin the output_sha256 it approved.
+    # Resolved: the sign-off DOES pin the approved bytes -- service.decide()
+    # re-fingerprints output_sha256 at decision time (the reviewer may have
+    # corrected the draft in Acrobat between the run and the approval).
 
 
 class Sidecar(BaseModel):

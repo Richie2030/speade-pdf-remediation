@@ -54,9 +54,10 @@ def run(
     except (FileNotFoundError, ValueError, KeyError) as exc:
         raise typer.BadParameter(str(exc)) from exc
 
-    output_pdf = service.workspace(config).outbox / pdf.name
+    workspace = service.workspace(config)
+    output_pdf = workspace.outbox / pdf.name
     typer.echo(f"Output: {output_pdf}")
-    typer.echo(f"Sidecar: {output_pdf.with_name(output_pdf.name + '.sidecar.json')}")
+    typer.echo(f"Sidecar: {workspace.sidecars / (pdf.name + '.sidecar.json')}")
     typer.echo(f"Stages applied: {', '.join(sidecar.stages_applied) or '(none)'}")
 
 
@@ -122,7 +123,8 @@ def verify(
     clauses = ", ".join(sidecar.verapdf_failed_clauses) or "no failures"
     typer.echo(f"veraPDF ({profile}): {verdict} ({clauses})")
     typer.echo(f"Decision: {sidecar.approval.status.value} by {reviewer}")
-    typer.echo(f"Sidecar updated: {pdf.with_name(pdf.name + '.sidecar.json')}")
+    sidecar_path = service.workspace(config).sidecars / (pdf.name + ".sidecar.json")
+    typer.echo(f"Sidecar updated: {sidecar_path}")
 
 
 def main() -> None:

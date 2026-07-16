@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 
 from pydantic import BaseModel, Field
+
+from speade import subproc
 
 # Arms-length CLI image (rule L2: run, never import). TODO: pin to a specific
 # published tag before a live run -- `:latest` is a placeholder, not reproducible.
@@ -96,7 +97,7 @@ def validate(pdf: Path, profile: str = "ua1", cli: str | None = None) -> VeraRes
         # no veraPDF CLI and no docker -- can't verify, fail closed for the human gate.
         return VeraResult(passed=False, failed_clauses=["verapdf-unavailable"], profile=profile)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)  # no check=True: see docstring
+        proc = subproc.run(cmd, capture_output=True, text=True)  # no check=True: see docstring
         report = json.loads(proc.stdout)
     except FileNotFoundError:
         # the located/configured runner is missing after all -- same fail-closed rule.

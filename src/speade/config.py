@@ -18,6 +18,10 @@ class LocalIOConfig(BaseModel):
 
     inbox: Path = Field(default=Path("data/inbox"), description="Source PDF folder")
     outbox: Path = Field(default=Path("data/outbox"), description="Remediated PDF output folder")
+    sidecars: Path = Field(
+        default=Path("data/sidecars"),
+        description="Per-document sidecar JSON folder (app-internal, kept out of the outbox)",
+    )
 
 
 class IOConfig(BaseModel):

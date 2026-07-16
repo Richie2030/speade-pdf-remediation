@@ -4,6 +4,7 @@ work and veraPDF is mocked, so no external tools are needed."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -20,7 +21,7 @@ def _write_config(tmp_path: Path) -> Path:
     """A noop-pipeline config with RELATIVE data paths (resolution under test)."""
     config = tmp_path / "config.yaml"
     config.write_text(
-        "io:\n  local:\n    inbox: inbox\n    outbox: outbox\n"
+        "io:\n  local:\n    inbox: inbox\n    outbox: outbox\n    sidecars: sidecars\n"
         "pipeline:\n  stages:\n    passthrough: noop\n"
         "audit:\n  log_path: audit/audit.jsonl\n",
         encoding="utf-8",
@@ -35,10 +36,30 @@ def test_workspace_resolves_relative_paths_against_the_config_dir(tmp_path):
 
     assert ws.inbox == (tmp_path / "inbox").resolve()
     assert ws.outbox == (tmp_path / "outbox").resolve()
+    assert ws.sidecars == (tmp_path / "sidecars").resolve()
     assert ws.audit_log == (tmp_path / "audit" / "audit.jsonl").resolve()
     assert ws.stages == {"passthrough": "noop"}
     assert ws.verapdf_profile == "ua1"
     assert ws.verapdf_cli is None
+
+
+def test_workspace_creates_the_data_folders_up_front(tmp_path):
+    # tester feedback: a fresh install must have inbox/outbox/audit ready the
+    # moment any client starts -- not materialising lazily on first use.
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "io:\n  local:\n    inbox: inbox\n    outbox: outbox\n"
+        "pipeline:\n  stages:\n    passthrough: noop\n"
+        "audit:\n  log_path: audit/audit.jsonl\n",
+        encoding="utf-8",
+    )
+
+    ws = service.workspace(config)
+
+    assert ws.inbox.is_dir()
+    assert ws.outbox.is_dir()
+    assert ws.sidecars.is_dir()  # the default (data/sidecars) also materialises
+    assert ws.audit_log.parent.is_dir()
 
 
 def test_run_batch_sweeps_the_configured_inbox(tmp_path):
@@ -52,7 +73,9 @@ def test_run_batch_sweeps_the_configured_inbox(tmp_path):
     assert [(item.file, item.ok) for item in items] == [("a.pdf", True), ("b.pdf", True)]
     for name in ("a.pdf", "b.pdf"):
         assert (tmp_path / "outbox" / name).read_bytes() == PDF_BYTES
-        assert (tmp_path / "outbox" / f"{name}.sidecar.json").is_file()
+        assert (tmp_path / "sidecars" / f"{name}.sidecar.json").is_file()
+    # the outbox itself holds deliverable PDFs only -- no sidecar clutter.
+    assert sorted(p.name for p in (tmp_path / "outbox").iterdir()) == ["a.pdf", "b.pdf"]
     audit = (tmp_path / "audit" / "audit.jsonl").read_text(encoding="utf-8")
     assert len(audit.splitlines()) == 2  # one audit line per file
 
@@ -76,10 +99,10 @@ def test_run_batch_isolates_per_file_failures(tmp_path, monkeypatch):
 
     real_run = service.runner.run
 
-    def flaky(src, stages, outbox, audit_log):
+    def flaky(src, stages, outbox, audit_log, sidecar_dir=None):
         if src.name == "bad.pdf":
             raise RuntimeError("engine exploded")
-        return real_run(src, stages, outbox, audit_log)
+        return real_run(src, stages, outbox, audit_log, sidecar_dir=sidecar_dir)
 
     monkeypatch.setattr(service.runner, "run", flaky)
 
@@ -113,9 +136,9 @@ def test_list_queue_summarises_outbox_sidecars(tmp_path):
 
 def test_list_queue_survives_a_mangled_sidecar(tmp_path):
     config = _write_config(tmp_path)
-    outbox = tmp_path / "outbox"
-    outbox.mkdir()
-    (outbox / "broken.pdf.sidecar.json").write_text("{not json", encoding="utf-8")
+    sidecars = tmp_path / "sidecars"
+    sidecars.mkdir()
+    (sidecars / "broken.pdf.sidecar.json").write_text("{not json", encoding="utf-8")
 
     queue = service.list_queue(config)
 
@@ -145,9 +168,9 @@ def test_decide_records_machine_verdict_and_human_decision(approve, tmp_path, mo
     assert sidecar.approval.decided_at is not None
     assert sidecar.verapdf_passed is False
     assert sidecar.verapdf_failed_clauses == ["7.1-1"]
-    # persisted next to the pdf, and audit-logged
+    # persisted in the sidecars folder, and audit-logged
     persisted = Sidecar.model_validate_json(
-        (tmp_path / "outbox" / "a.pdf.sidecar.json").read_text(encoding="utf-8")
+        (tmp_path / "sidecars" / "a.pdf.sidecar.json").read_text(encoding="utf-8")
     )
     assert persisted.approval.status == expected
     events = [
@@ -158,6 +181,33 @@ def test_decide_records_machine_verdict_and_human_decision(approve, tmp_path, mo
     assert events[-1]["decision"] == expected.value
 
 
+def test_decide_refingerprints_the_bytes_being_approved(tmp_path, monkeypatch):
+    # the reviewer may correct the draft (e.g. in Acrobat) between the run and
+    # the sign-off: the approval must pin the bytes as they are NOW, so the
+    # audit trail keeps proving approved == shipped.
+    config = _write_config(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+    service.run_batch(None, config)
+    monkeypatch.setattr(
+        service.verapdf,
+        "validate",
+        lambda pdf, profile="ua1", cli=None: VeraResult(passed=True, profile=profile),
+    )
+    corrected = b"%PDF-1.7\n% corrected in acrobat\n%%EOF\n"
+    out = tmp_path / "outbox" / "a.pdf"
+    out.write_bytes(corrected)
+
+    sidecar = service.decide(out, reviewer="s123456", approve=True, config_path=config)
+
+    assert sidecar.output_sha256 == hashlib.sha256(corrected).hexdigest()
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "audit" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-1]["event"] == "verify"
+    assert events[-1]["output_sha256"] == sidecar.output_sha256
+
+
 def test_decide_requires_a_sidecar(tmp_path):
     config = _write_config(tmp_path)
     (tmp_path / "outbox").mkdir()
@@ -166,6 +216,19 @@ def test_decide_requires_a_sidecar(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         service.decide(orphan, reviewer="x", approve=True, config_path=config)
+
+
+def test_decide_requires_the_pdf_itself(tmp_path):
+    # a decision needs bytes to pin: a sidecar whose PDF has vanished must be a
+    # clear error, never a recorded approval of a document that is not there.
+    config = _write_config(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+    service.run_batch(None, config)
+    missing = tmp_path / "outbox" / "a.pdf"
+    missing.unlink()  # sidecar stays behind
+
+    with pytest.raises(FileNotFoundError, match="PDF not found"):
+        service.decide(missing, reviewer="x", approve=True, config_path=config)
 
 
 def test_run_one_unknown_stage_fails_fast(tmp_path):

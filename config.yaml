@@ -9,8 +9,9 @@
 io:
   # The offline core runs against a local folder -- the only document source.
   local:
-    inbox: ./data/inbox    # drop source PDFs here
-    outbox: ./data/outbox  # remediated copies + sidecars are written here
+    inbox: ./data/inbox        # drop source PDFs here
+    outbox: ./data/outbox      # remediated PDFs are written here (deliverables only)
+    sidecars: ./data/sidecars  # per-document sidecar JSON (app-internal records)
 
 pipeline:
   # stage_role: implementation_name  (see `speade stages` for available impls)

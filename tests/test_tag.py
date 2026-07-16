@@ -44,7 +44,7 @@ def test_scanned_route_skips_engine_and_flags(tmp_path, monkeypatch):
     # must skip it, flag it, and NOT touch the engine.
     calls = []
     stage = TagStage()
-    monkeypatch.setattr(stage, "_tag", lambda pdf, out: calls.append((pdf, out)))
+    monkeypatch.setattr(stage, "_tag", lambda pdf, out, title: calls.append((pdf, out)))
 
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(_PDF_BYTES)
@@ -64,7 +64,7 @@ def test_unknown_route_tags_anyway_with_reviewer_flag(tmp_path, monkeypatch):
     # structure now -- and the flag sends the reviewer to check coverage.
     calls = []
 
-    def fake_tag(pdf, out):
+    def fake_tag(pdf, out, title):
         calls.append((pdf, out))
         out.write_bytes(b"%PDF-1.7 tagged\n%%EOF\n")
 
@@ -87,7 +87,7 @@ def test_unreadable_input_skips_engine_and_flags(tmp_path, monkeypatch):
     # the engine -- it flows to the gate untouched, reason already recorded.
     calls = []
     stage = TagStage()
-    monkeypatch.setattr(stage, "_tag", lambda pdf, out: calls.append((pdf, out)))
+    monkeypatch.setattr(stage, "_tag", lambda pdf, out, title: calls.append((pdf, out)))
 
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(_PDF_BYTES)
@@ -108,7 +108,7 @@ def test_already_tagged_pdf_skips_engine_and_flags(tmp_path, monkeypatch):
     # the engine when it is already tagged, and be left untouched.
     calls = []
     stage = TagStage()
-    monkeypatch.setattr(stage, "_tag", lambda pdf, out: calls.append((pdf, out)))
+    monkeypatch.setattr(stage, "_tag", lambda pdf, out, title: calls.append((pdf, out)))
 
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(_PDF_BYTES)
@@ -130,7 +130,7 @@ def test_born_digital_route_invokes_engine_and_writes_new_file(tmp_path, monkeyp
     # A born-digital doc goes to the engine, which writes a NEW tagged copy.
     calls = []
 
-    def fake_tag(pdf, out):
+    def fake_tag(pdf, out, title):
         calls.append((pdf, out))
         out.write_bytes(b"%PDF-1.7 tagged\n%%EOF\n")  # pretend the engine tagged it
 
@@ -155,7 +155,7 @@ def test_born_digital_never_mutates_the_input(tmp_path, monkeypatch):
     # The do-not-degrade invariant: tag writes a new file and leaves its input
     # byte-for-byte intact, even though this stage changes the PDF.
     stage = TagStage()
-    monkeypatch.setattr(stage, "_tag", lambda pdf, out: out.write_bytes(b"tagged"))
+    monkeypatch.setattr(stage, "_tag", lambda pdf, out, title: out.write_bytes(b"tagged"))
 
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(_PDF_BYTES)
@@ -164,6 +164,28 @@ def test_born_digital_never_mutates_the_input(tmp_path, monkeypatch):
 
     assert result.output != pdf  # a distinct file, not the input
     assert pdf.read_bytes() == _PDF_BYTES  # input preserved
+
+
+def test_title_comes_from_the_original_name_not_the_working_copy(tmp_path, monkeypatch):
+    # dc:title is what viewers display (DisplayDocTitle). Post-OCR the working
+    # copy is `doc.ocr.pdf` -- the stamped title must still be the ORIGINAL
+    # filename stem from the sidecar, never the working copy's stem.
+    titles = []
+
+    def fake_tag(pdf, out, title):
+        titles.append(title)
+        out.write_bytes(b"%PDF-1.7 tagged\n%%EOF\n")
+
+    stage = TagStage()
+    monkeypatch.setattr(stage, "_tag", fake_tag)
+
+    pdf = tmp_path / "doc.ocr.pdf"  # the working copy ocr leaves behind
+    pdf.write_bytes(_PDF_BYTES)
+    sidecar = Sidecar(source_path="inbox/doc.pdf", source_sha256="0", route=Route.BORN_DIGITAL)
+
+    stage.run(pdf, sidecar)
+
+    assert titles == ["doc"]
 
 
 def test_tag_shells_out_to_engine_and_returns_new_file(tmp_path, monkeypatch):
@@ -185,6 +207,36 @@ def test_tag_shells_out_to_engine_and_returns_new_file(tmp_path, monkeypatch):
     assert result.output == tmp_path / "doc.tagged.pdf"
     assert result.output.exists()
     assert pdf.read_bytes() == _PDF_BYTES  # input untouched
+
+
+def test_finish_stamps_conformance_bits_and_original_title(tmp_path, monkeypatch):
+    # end-to-end through the REAL _tag + _finish_pdf_ua (engine faked at the
+    # subprocess seam, emitting a genuine PDF): the stamped dc:title must be the
+    # ORIGINAL stem ("doc"), not the working copy's ("doc.ocr"), alongside the
+    # MarkInfo / Lang / pdfuaid conformance bits.
+    pikepdf = pytest.importorskip("pikepdf", reason="needs --extra tag")
+
+    def fake_run(cmd, **kwargs):
+        outdir = Path(cmd[cmd.index("--output-dir") + 1])
+        engine_out = pikepdf.Pdf.new()
+        engine_out.add_blank_page()
+        engine_out.save(outdir / "doc.ocr.tagged.pdf")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(tag_module.subprocess, "run", fake_run)
+
+    pdf = tmp_path / "doc.ocr.pdf"  # the working copy ocr leaves behind
+    pdf.write_bytes(_PDF_BYTES)
+    sidecar = Sidecar(source_path="inbox/doc.pdf", source_sha256="0", route=Route.BORN_DIGITAL)
+
+    result = TagStage().run(pdf, sidecar)
+
+    with pikepdf.open(result.output) as doc:
+        assert bool(doc.Root.MarkInfo.Marked) is True
+        assert str(doc.Root.Lang) == "en"
+        with doc.open_metadata() as meta:
+            assert meta["dc:title"] == "doc"
+            assert meta["pdfuaid:part"] == "1"
 
 
 def test_missing_engine_fails_loud(tmp_path, monkeypatch):

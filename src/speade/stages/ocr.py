@@ -22,6 +22,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from speade import subproc
 from speade.pipeline.contract import Route, Sidecar, StageResult
 
 # Default Windows installer location, probed when tesseract isn't on PATH (the
@@ -142,7 +143,7 @@ class OcrStage:
                     png = tmpd / f"pg_{i:04d}.png"
                     doc[i].render(scale=_DPI / 72).to_pil().save(png)
                     stem = tmpd / f"pg_{i:04d}"
-                    proc = subprocess.run(
+                    proc = subproc.run(
                         [tesseract, str(png), str(stem), "pdf"],
                         capture_output=True,
                         text=True,
