@@ -1,25 +1,45 @@
 """OCR stage (Stage 3, STRETCH) -- add a searchable text layer to a scanned PDF
 before tagging.
 
-Engine: Tesseract invoked DIRECTLY (arms-length subprocess, rule L2) -- it can
-emit a searchable one-page PDF itself, which drops the ocrmypdf + Ghostscript
-system stack an earlier draft needed. Pages are rendered with pypdfium2 (a
-permissive, self-contained pip wheel -- no system renderer install) and merged
-with pikepdf. This exact chain was proven end-to-end by datasets/build_corpus.py
-before being promoted here.
+Engine: Tesseract invoked at arms length (rule L2), but in **hOCR mode**, not its
+own PDF renderer. Pages are rendered with pypdfium2, Tesseract reports the line
+boxes (`tesseract <img> <stem> hocr`), and the output page is assembled here with
+pikepdf: the scan image drawn as an /Artifact (background, not content) plus ONE
+invisible text run per recognised line, words joined by real spaces.
+
+Why not Tesseract's `pdf` output (the earlier design)? Its layer emits each WORD
+as a separately positioned run in a metrics-less glyphless font. The downstream
+tagging engine (OpenDataLoader) clusters text by geometry, and that shape breaks
+it two ways, measured on the live test corpus (block-2 spike, 2026-07-16):
+
+  - paragraphs shattered into one tag per line/word (28 P on a one-page story);
+  - extracted text lost its word boundaries ("AminhaamigaRita...").
+
+The line-level layer built here, with per-page font-size quantisation (OCR jitter
+otherwise reads as "different styles" and blocks paragraph merging), tags the
+same page into its real structure (6 P + real H1/H2 headings) -- and PASSES
+veraPDF UA-1 where the old layer FAILED (clause 7.21.7-1, a glyphless-font
+defect). The invisible text (render mode 3) uses non-embedded Helvetica, which
+UA-1 permits: the embedding requirement applies to *rendered* text only.
+Rotated lines (hOCR `textangle`) are dropped -- vertical margin text OCRs to
+gibberish fragments.
 
 OCR is optional (stretch), so a missing engine or a failed run never crashes a
 batch: the problem is flagged on the sidecar and the doc flows on -- tag will
 skip it (needs-ocr) and the human gate sees exactly why.
 
-Deps: `uv sync --extra ocr` (pypdfium2 + pikepdf) plus a system Tesseract >=5.
+Deps: `uv sync --extra ocr` (pypdfium2 + pikepdf, whose Pillow renders/encodes
+the page images) plus a system Tesseract >=5.
 """
 
 from __future__ import annotations
 
+import re
 import shutil
+import statistics
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from speade import subproc
@@ -31,12 +51,199 @@ from speade.pipeline.contract import Route, Sidecar, StageResult
 _WIN_TESSERACT = Path("C:/Program Files/Tesseract-OCR/tesseract.exe")
 
 _DPI = 200  # render resolution: the OCR-quality vs speed/size balance point
+_JPEG_QUALITY = 80  # page-image size vs legibility for the human reviewer
 _PAGE_TIMEOUT_S = 300  # per page; a stuck engine must not hang a batch forever
+_SCALE = 72.0 / _DPI  # hOCR pixel coordinates -> PDF points
+
+# a line >= this multiple of the page's median size is a real heading and keeps
+# its measured size; everything below is snapped to the median (see _quantize).
+_HEADING_RATIO = 1.25
+
+_BBOX_RE = re.compile(r"bbox (\d+) (\d+) (\d+) (\d+)")
+_XSIZE_RE = re.compile(r"x_size ([\d.]+)")
+_BASELINE_RE = re.compile(r"baseline ([-\d.]+) ([-\d.]+)")
+_ANGLE_RE = re.compile(r"textangle ([-\d.]+)")
 
 
 def find_tesseract() -> str | None:
     """Locate the Tesseract executable: PATH first, then the Windows default dir."""
     return shutil.which("tesseract") or (str(_WIN_TESSERACT) if _WIN_TESSERACT.exists() else None)
+
+
+@dataclass
+class OcrLine:
+    """One recognised text line: its words joined by spaces + page-pixel geometry."""
+
+    text: str
+    x0: int
+    y0: int
+    x1: int
+    y1: int
+    size: float  # font size in page pixels (hOCR x_size)
+    baseline_dy: float  # baseline offset from the box bottom (usually negative)
+
+
+def parse_hocr(hocr: str) -> list[OcrLine]:
+    """Collect the text lines of one hOCR page (Tesseract quotes line titles with
+    double quotes and word titles with single quotes -- a real HTML parse, not a
+    regex, keeps both working). Rotated lines (`textangle`) are dropped."""
+    from html.parser import HTMLParser
+
+    lines: list[OcrLine] = []
+
+    class Collector(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.line: dict | None = None  # the ocr_line being collected
+            self.depth = 0  # span nesting below the current line
+            self.in_word = False
+
+        def handle_starttag(self, tag: str, attrs) -> None:
+            if tag != "span":
+                return
+            a = dict(attrs)
+            cls, title = a.get("class", ""), a.get("title", "")
+            if cls in ("ocr_line", "ocr_header", "ocr_textfloat", "ocr_caption"):
+                bbox = _BBOX_RE.search(title)
+                if bbox is None or _ANGLE_RE.search(title):
+                    self.line = None  # unusable or rotated: skip this line
+                    return
+                x0, y0, x1, y1 = map(int, bbox.groups())
+                xs = _XSIZE_RE.search(title)
+                base = _BASELINE_RE.search(title)
+                self.line = {
+                    "parts": [],
+                    "x0": x0,
+                    "y0": y0,
+                    "x1": x1,
+                    "y1": y1,
+                    "size": float(xs.group(1)) if xs else (y1 - y0) * 0.75,
+                    "baseline_dy": float(base.group(2)) if base else 0.0,
+                }
+                self.depth = 0
+            elif self.line is not None:
+                self.depth += 1
+                if cls == "ocrx_word":
+                    self.in_word = True
+                    self.line["parts"].append("")
+
+        def handle_endtag(self, tag: str) -> None:
+            if tag != "span" or self.line is None:
+                return
+            if self.depth > 0:
+                self.depth -= 1
+                self.in_word = False
+            else:  # the line span itself closed
+                text = " ".join(p.strip() for p in self.line["parts"] if p.strip())
+                if text:
+                    parts = self.line
+                    lines.append(
+                        OcrLine(
+                            text=text,
+                            x0=parts["x0"],
+                            y0=parts["y0"],
+                            x1=parts["x1"],
+                            y1=parts["y1"],
+                            size=parts["size"],
+                            baseline_dy=parts["baseline_dy"],
+                        )
+                    )
+                self.line = None
+
+        def handle_data(self, data: str) -> None:
+            if self.line is not None and self.in_word:
+                self.line["parts"][-1] += data
+
+    Collector().feed(hocr)
+    return quantize_sizes(lines)
+
+
+def quantize_sizes(lines: list[OcrLine]) -> list[OcrLine]:
+    """Snap body-line font sizes to the page median. OCR x_size jitters line to
+    line; the tagging engine reads that as 'different styles' and refuses to
+    merge lines into paragraphs (and promotes slightly-larger lines to fake
+    headings). Genuinely larger lines -- real headings -- keep their size."""
+    if not lines:
+        return lines
+    median = statistics.median(line.size for line in lines)
+    for line in lines:
+        if line.size < _HEADING_RATIO * median:
+            line.size = median
+    return lines
+
+
+def _escape(text: str) -> bytes:
+    """A PDF literal string: escape delimiters; Helvetica is Latin-1 territory,
+    so anything outside it degrades to '?' rather than corrupting the layer."""
+    escaped = text.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+    return escaped.encode("latin-1", errors="replace")
+
+
+def page_content(lines: list[OcrLine], w_px: int, h_px: int) -> bytes:
+    """The content stream for one OCR'd page: the scan image as an /Artifact
+    (decorative background -- NOT document content, so the tagging engine has no
+    text-bearing Figure to wrap), then one invisible (render mode 3) text run
+    per line at its measured baseline, stretched to the line's box width."""
+    w_pt, h_pt = w_px * _SCALE, h_px * _SCALE
+    ops = [
+        b"/Artifact BMC",
+        b"q",
+        f"{w_pt:.2f} 0 0 {h_pt:.2f} 0 0 cm".encode(),
+        b"/Im0 Do",
+        b"Q",
+        b"EMC",
+        b"BT",
+        b"3 Tr",
+    ]
+    for line in lines:
+        size_pt = max(line.size * _SCALE, 4.0)
+        x_pt = line.x0 * _SCALE
+        # hOCR y1 is the box bottom in top-left pixel coords; baseline_dy shifts
+        # from there to the true baseline. Flip into PDF bottom-left points.
+        y_pt = (h_px - (line.y1 + line.baseline_dy)) * _SCALE
+        # stretch the run across the measured line width (Helvetica ~0.5em/char)
+        natural = max(len(line.text) * size_pt * 0.5, 1.0)
+        target = (line.x1 - line.x0) * _SCALE
+        tz = max(min(target / natural * 100.0, 300.0), 20.0)
+        ops.append(f"/F1 {size_pt:.2f} Tf".encode())
+        ops.append(f"{tz:.1f} Tz".encode())
+        ops.append(f"1 0 0 1 {x_pt:.2f} {y_pt:.2f} Tm".encode())
+        ops.append(b"(" + _escape(line.text) + b") Tj")
+    ops.append(b"ET")
+    return b"\n".join(ops)
+
+
+def add_page(pdf, image, lines: list[OcrLine]) -> None:
+    """Append one page to `pdf` (a pikepdf.Pdf): `image` (a PIL image of the
+    scan) as a JPEG XObject plus the invisible text layer for `lines`."""
+    import io
+
+    import pikepdf
+
+    w_px, h_px = image.width, image.height
+    page = pdf.add_blank_page(page_size=(w_px * _SCALE, h_px * _SCALE))
+
+    buf = io.BytesIO()
+    image.convert("RGB").save(buf, format="JPEG", quality=_JPEG_QUALITY)
+    xobj = pikepdf.Stream(pdf, buf.getvalue())
+    xobj.Type = pikepdf.Name.XObject
+    xobj.Subtype = pikepdf.Name.Image
+    xobj.Width, xobj.Height = w_px, h_px
+    xobj.ColorSpace = pikepdf.Name.DeviceRGB
+    xobj.BitsPerComponent = 8
+    xobj.Filter = pikepdf.Name.DCTDecode
+
+    page.Resources = pikepdf.Dictionary(
+        XObject=pikepdf.Dictionary(Im0=xobj),
+        Font=pikepdf.Dictionary(
+            F1=pikepdf.Dictionary(
+                Type=pikepdf.Name.Font,
+                Subtype=pikepdf.Name.Type1,
+                BaseFont=pikepdf.Name.Helvetica,
+            )
+        ),
+    )
+    page.Contents = pdf.make_stream(page_content(lines, w_px, h_px))
 
 
 class OcrStage:
@@ -129,22 +336,24 @@ class OcrStage:
 
     def _ocr(self, pdf: Path, out: Path) -> None:
         """Render each page (~200 DPI, pypdfium2), OCR it with `tesseract <img>
-        <stem> pdf` into a one-page searchable PDF, then merge with pikepdf."""
+        <stem> hocr`, and assemble the output page here: artifact background
+        image + a line-level invisible text layer (see the module docstring)."""
         import pikepdf
         import pypdfium2 as pdfium
 
         tesseract = find_tesseract()
+        merged = pikepdf.Pdf.new()
         with tempfile.TemporaryDirectory(prefix="speade_ocr_") as tmp:
             tmpd = Path(tmp)
-            page_pdfs: list[Path] = []
             doc = pdfium.PdfDocument(str(pdf))
             try:
                 for i in range(len(doc)):
                     png = tmpd / f"pg_{i:04d}.png"
-                    doc[i].render(scale=_DPI / 72).to_pil().save(png)
+                    image = doc[i].render(scale=_DPI / 72).to_pil()
+                    image.save(png)
                     stem = tmpd / f"pg_{i:04d}"
                     proc = subproc.run(
-                        [tesseract, str(png), str(stem), "pdf"],
+                        [tesseract, str(png), str(stem), "hocr"],
                         capture_output=True,
                         text=True,
                         timeout=_PAGE_TIMEOUT_S,
@@ -154,12 +363,8 @@ class OcrStage:
                             f"tesseract failed on page {i + 1} "
                             f"(exit {proc.returncode}): {proc.stderr[:200]}"
                         )
-                    page_pdfs.append(stem.with_suffix(".pdf"))
+                    hocr = stem.with_suffix(".hocr").read_text(encoding="utf-8")
+                    add_page(merged, image, parse_hocr(hocr))
             finally:
                 doc.close()
-
-            merged = pikepdf.Pdf.new()
-            for page_pdf in page_pdfs:
-                with pikepdf.open(page_pdf) as page_doc:
-                    merged.pages.extend(page_doc.pages)
             merged.save(out)
