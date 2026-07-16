@@ -39,6 +39,7 @@ import shutil
 import statistics
 import subprocess
 import tempfile
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -58,6 +59,100 @@ _SCALE = 72.0 / _DPI  # hOCR pixel coordinates -> PDF points
 # a line >= this multiple of the page's median size is a real heading and keeps
 # its measured size; everything below is snapped to the median (see _quantize).
 _HEADING_RATIO = 1.25
+
+# Standard Helvetica advance widths (AFM, per mille of the font size). The
+# invisible layer is stretched so each line's text spans EXACTLY the printed
+# line's measured box -- an estimated average width leaves the run short and
+# the last words of a line untagged (live-testing finding). Characters outside
+# the table fall back to their unaccented base letter, then to 556 (avg glyph).
+_HELVETICA_WIDTHS = {
+    " ": 278,
+    "!": 278,
+    '"': 355,
+    "#": 556,
+    "$": 556,
+    "%": 889,
+    "&": 667,
+    "'": 191,
+    "(": 333,
+    ")": 333,
+    "*": 389,
+    "+": 584,
+    ",": 278,
+    "-": 333,
+    ".": 278,
+    "/": 278,
+    ":": 278,
+    ";": 278,
+    "<": 584,
+    "=": 584,
+    ">": 584,
+    "?": 556,
+    "@": 1015,
+    "[": 278,
+    "\\": 278,
+    "]": 278,
+    "^": 469,
+    "_": 556,
+    "`": 333,
+    "{": 334,
+    "|": 260,
+    "}": 334,
+    "~": 584,
+    **dict.fromkeys("0123456789", 556),
+    "A": 667,
+    "B": 667,
+    "C": 722,
+    "D": 722,
+    "E": 667,
+    "F": 611,
+    "G": 778,
+    "H": 722,
+    "I": 278,
+    "J": 500,
+    "K": 667,
+    "L": 556,
+    "M": 833,
+    "N": 722,
+    "O": 778,
+    "P": 667,
+    "Q": 778,
+    "R": 722,
+    "S": 667,
+    "T": 611,
+    "U": 722,
+    "V": 667,
+    "W": 944,
+    "X": 667,
+    "Y": 667,
+    "Z": 611,
+    "a": 556,
+    "b": 556,
+    "c": 500,
+    "d": 556,
+    "e": 556,
+    "f": 278,
+    "g": 556,
+    "h": 556,
+    "i": 222,
+    "j": 222,
+    "k": 500,
+    "l": 222,
+    "m": 833,
+    "n": 556,
+    "o": 556,
+    "p": 556,
+    "q": 556,
+    "r": 333,
+    "s": 500,
+    "t": 278,
+    "u": 556,
+    "v": 500,
+    "w": 722,
+    "x": 500,
+    "y": 500,
+    "z": 500,
+}
 
 _BBOX_RE = re.compile(r"bbox (\d+) (\d+) (\d+) (\d+)")
 _XSIZE_RE = re.compile(r"x_size ([\d.]+)")
@@ -172,6 +267,19 @@ def quantize_sizes(lines: list[OcrLine]) -> list[OcrLine]:
     return lines
 
 
+def text_width(text: str, size_pt: float) -> float:
+    """The natural (unstretched) Helvetica width of `text` in points."""
+
+    def char_width(ch: str) -> int:
+        w = _HELVETICA_WIDTHS.get(ch)
+        if w is None:  # accented letter: measure its unaccented base
+            base = unicodedata.normalize("NFD", ch)[:1]
+            w = _HELVETICA_WIDTHS.get(base, 556)
+        return w
+
+    return sum(char_width(ch) for ch in text) / 1000.0 * size_pt
+
+
 def _escape(text: str) -> bytes:
     """A PDF literal string: escape delimiters; Helvetica is Latin-1 territory,
     so anything outside it degrades to '?' rather than corrupting the layer."""
@@ -201,10 +309,11 @@ def page_content(lines: list[OcrLine], w_px: int, h_px: int) -> bytes:
         # hOCR y1 is the box bottom in top-left pixel coords; baseline_dy shifts
         # from there to the true baseline. Flip into PDF bottom-left points.
         y_pt = (h_px - (line.y1 + line.baseline_dy)) * _SCALE
-        # stretch the run across the measured line width (Helvetica ~0.5em/char)
-        natural = max(len(line.text) * size_pt * 0.5, 1.0)
+        # stretch the run across the measured line width -- with REAL Helvetica
+        # metrics, so the tagged region reaches the line's actual right edge.
+        natural = max(text_width(line.text, size_pt), 1.0)
         target = (line.x1 - line.x0) * _SCALE
-        tz = max(min(target / natural * 100.0, 300.0), 20.0)
+        tz = max(min(target / natural * 100.0, 400.0), 20.0)
         ops.append(f"/F1 {size_pt:.2f} Tf".encode())
         ops.append(f"{tz:.1f} Tz".encode())
         ops.append(f"1 0 0 1 {x_pt:.2f} {y_pt:.2f} Tm".encode())

@@ -16,6 +16,7 @@ import getpass
 import os
 import shutil
 import sys
+import threading
 from pathlib import Path
 
 from speade import service, subproc
@@ -42,6 +43,8 @@ class SpeadeApi:
     def __init__(self, config_path: Path | None = None) -> None:
         self._config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
         self._window = None  # set by app.py once the window exists (native dialogs)
+        self._batch_lock = threading.Lock()
+        self._batch: dict = {"running": False}  # polled by run_batch_status
 
     def attach_window(self, window) -> None:
         self._window = window
@@ -78,10 +81,56 @@ class SpeadeApi:
         encoded = base64.b64encode(data).decode("ascii")
         return {"data_uri": f"data:application/pdf;base64,{encoded}"}
 
+    def structure(self, file: str) -> dict:
+        """Plain counts of a draft's tag tree (headings, paragraphs, figures...)
+        so the reviewer sees whether it is actually tagged without Acrobat."""
+        pdf = service.workspace(self._config_path).outbox / Path(file).name
+        if not pdf.is_file():
+            return {"error": f"not found: {pdf.name}"}
+        try:
+            return service.structure_summary(pdf).model_dump(mode="json")
+        except Exception as exc:  # unreadable file / missing pikepdf: a note, not a crash
+            return {"error": f"structure unavailable: {str(exc)[:120]}"}
+
+    def audit_log(self, limit: int = 200) -> list[dict]:
+        """The audit trail, newest first -- the History view."""
+        return service.audit_events(self._config_path, limit=limit)
+
     # ------------------------------------------------------------ write side
     def run_batch(self) -> list[dict]:
-        """Sweep the configured inbox; one bad file never kills the batch."""
+        """Sweep the configured inbox; one bad file never kills the batch.
+        Synchronous variant (blocks until done) -- the UI uses run_batch_start
+        + run_batch_status for its progress bar instead."""
         return [item.model_dump(mode="json") for item in service.run_batch(None, self._config_path)]
+
+    def run_batch_start(self) -> dict:
+        """Kick off a batch on a worker thread; the UI polls run_batch_status.
+        pywebview runs each bridge call on its own thread, so status polls keep
+        flowing while the worker grinds through the inbox."""
+        with self._batch_lock:
+            if self._batch.get("running"):
+                return {"error": "a batch is already running"}
+            self._batch = {"running": True, "done": 0, "total": 0, "current": ""}
+
+        def progress(done: int, total: int, current: str) -> None:
+            self._batch.update(done=done, total=total, current=current)
+
+        def worker() -> None:
+            try:
+                items = service.run_batch(None, self._config_path, progress=progress)
+                self._batch["items"] = [item.model_dump(mode="json") for item in items]
+            except Exception as exc:  # config errors etc. -- surfaced to the UI
+                self._batch["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+            finally:
+                self._batch["running"] = False
+
+        threading.Thread(target=worker, name="speade-batch", daemon=True).start()
+        return {"started": True}
+
+    def run_batch_status(self) -> dict:
+        """The polled state of the running (or last) batch: running / done /
+        total / current file, plus items or error once finished."""
+        return dict(self._batch)
 
     def decide(self, file: str, reviewer: str, approve: bool) -> dict:
         """The human gate: veraPDF verdict + the reviewer's decision (service.decide)."""

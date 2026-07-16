@@ -17,6 +17,17 @@ from speade.validation.verapdf import VeraResult
 PDF_BYTES = b"%PDF-1.7\n%%EOF\n"
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_verapdf(monkeypatch):
+    """run_one/run_batch score every draft with veraPDF now -- keep the suite
+    hermetic and fast with a canned pass. Tests override per-case as needed."""
+    monkeypatch.setattr(
+        service.verapdf,
+        "validate",
+        lambda pdf, profile="ua1", cli=None: VeraResult(passed=True, profile=profile),
+    )
+
+
 def _write_config(tmp_path: Path) -> Path:
     """A noop-pipeline config with RELATIVE data paths (resolution under test)."""
     config = tmp_path / "config.yaml"
@@ -130,8 +141,55 @@ def test_list_queue_summarises_outbox_sidecars(tmp_path):
     assert item.file == "a.pdf"
     assert item.status == "draft"  # automation never approves (mandatory gate)
     assert item.stages_applied == ["noop"]
-    assert item.verapdf_passed is None
+    assert item.verapdf_passed is True  # scored right after processing (advisory)
     assert item.reviewer is None
+
+
+def test_run_batch_reports_per_file_progress(tmp_path):
+    config = _write_config(tmp_path)
+    for name in ("a.pdf", "b.pdf"):
+        (tmp_path / "inbox" / name).write_bytes(PDF_BYTES)
+    seen: list[tuple[int, int, str]] = []
+
+    service.run_batch(None, config, progress=lambda d, t, f: seen.append((d, t, f)))
+
+    # before each file, then a final "all done" tick -- the progress bar's feed.
+    assert seen == [(0, 2, "a.pdf"), (1, 2, "b.pdf"), (2, 2, "")]
+
+
+def test_run_batch_persists_the_advisory_verdict(tmp_path, monkeypatch):
+    # the reviewer must see the machine verdict right after processing, without
+    # opening Acrobat or waiting for the decision step.
+    config = _write_config(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+    monkeypatch.setattr(
+        service.verapdf,
+        "validate",
+        lambda pdf, profile="ua1", cli=None: VeraResult(
+            passed=False, failed_clauses=["6.2-1"], profile=profile
+        ),
+    )
+
+    items = service.run_batch(None, config)
+
+    assert items[0].sidecar.verapdf_passed is False
+    persisted = Sidecar.model_validate_json(
+        (tmp_path / "sidecars" / "a.pdf.sidecar.json").read_text(encoding="utf-8")
+    )
+    assert persisted.verapdf_passed is False
+    assert persisted.verapdf_failed_clauses == ["6.2-1"]
+
+
+def test_audit_events_newest_first_with_time_and_file(tmp_path):
+    config = _write_config(tmp_path)
+    for name in ("a.pdf", "b.pdf"):
+        (tmp_path / "inbox" / name).write_bytes(PDF_BYTES)
+    service.run_batch(None, config)
+
+    events = service.audit_events(config)
+
+    assert [e["file"] for e in events] == ["b.pdf", "a.pdf"]  # newest first
+    assert all(e["ts"] for e in events)  # the History view needs timestamps
 
 
 def test_list_queue_survives_a_mangled_sidecar(tmp_path):

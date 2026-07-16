@@ -2,37 +2,49 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>SPEADE Review</title>
+  <title>SPEADE — PDF Accessibility</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header>
-    <h1>SPEADE <span>PDF remediation &mdash; human verification gate</span></h1>
-    <div id="paths" class="muted"></div>
+    <img id="logo" src="ucc-logo.png" alt="University College Cork">
+    <div class="head-text">
+      <h1>SPEADE <span>PDF Accessibility</span></h1>
+      <div id="paths" class="paths"></div>
+    </div>
   </header>
 
   <div class="toolbar">
     <button id="add">Add PDFs&hellip;</button>
-    <button id="run" class="primary">Run batch</button>
-    <button id="refresh">Refresh queue</button>
-    <button id="open-outbox">Open outbox folder</button>
+    <button id="run" class="primary">Process PDFs</button>
+    <button id="refresh">Refresh list</button>
+    <button id="open-outbox">Open output folder</button>
+    <button id="history">History</button>
+    <div id="progress-wrap" hidden>
+      <progress id="progress" max="1" value="0"></progress>
+      <span id="progress-text"></span>
+    </div>
     <span id="status" class="muted" role="status" aria-live="polite"></span>
   </div>
 
   <main>
-    <aside id="queue" aria-label="Review queue"></aside>
+    <aside id="queue" aria-label="Documents to review"></aside>
 
     <section id="detail">
       <div id="detail-empty" class="empty">
-        Drop PDFs into the inbox (or <b>Add PDFs&hellip;</b>), press
-        <b>Run batch</b>, then select a draft from the queue to review it.
+        <p><b>How it works:</b></p>
+        <p>1. Click <b>Add PDFs&hellip;</b> to pick documents (or drop them in the
+           input folder shown above).</p>
+        <p>2. Click <b>Process PDFs</b> — the app recognises text in scans and adds
+           accessibility tags.</p>
+        <p>3. Pick a document from the list, check it, and record your decision.</p>
       </div>
 
       <div id="detail-body" hidden>
         <div class="detail-head">
           <h2 id="doc-name"></h2>
           <div>
-            <button id="open-viewer">Open in viewer</button>
+            <button id="open-viewer">Open in PDF viewer</button>
           </div>
         </div>
 
@@ -40,18 +52,30 @@
         <div id="doc-flags"></div>
 
         <div id="preview-wrap">
-          <embed id="preview" type="application/pdf">
+          <embed id="preview" type="application/pdf" title="Document preview">
           <div id="preview-note" class="muted" hidden></div>
         </div>
 
         <div class="gate">
-          <div class="gate-title">Human gate &mdash; the decision is yours, not the machine's</div>
-          <label for="reviewer">Reviewer</label>
-          <input id="reviewer" type="text" placeholder="student number" autocomplete="off">
-          <button id="approve" class="approve">Approve</button>
-          <button id="reject" class="reject">Reject</button>
+          <div class="gate-title">Your decision — the app only makes a draft.
+            Check the document (fix anything needed in Adobe Acrobat first),
+            then decide. Approving is the final step.</div>
+          <label for="reviewer">Your student number</label>
+          <input id="reviewer" type="text" placeholder="e.g. 123456789" autocomplete="off">
+          <button id="approve" class="approve">Approve — ready to share</button>
+          <button id="reject" class="reject">Reject — needs more work</button>
           <div id="gate-result" class="muted"></div>
         </div>
+      </div>
+
+      <div id="history-pane" hidden>
+        <h2>History</h2>
+        <p class="muted">Everything the app has done, newest first. This record
+          cannot be edited.</p>
+        <table id="history-table" aria-label="Audit history">
+          <thead><tr><th>When</th><th>Document</th><th>What happened</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
     </section>
   </main>

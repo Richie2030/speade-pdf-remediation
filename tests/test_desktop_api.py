@@ -8,12 +8,27 @@ that IS the bridge contract: pywebview serialises it to the JS side."""
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
+import pytest
+
+from speade import service
 from speade.desktop.api import SpeadeApi
 from speade.validation.verapdf import VeraResult
 
 PDF_BYTES = b"%PDF-1.7\n%%EOF\n"
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_verapdf(monkeypatch):
+    """run_batch scores every draft with veraPDF now -- keep the bridge tests
+    hermetic and fast with a canned pass."""
+    monkeypatch.setattr(
+        service.verapdf,
+        "validate",
+        lambda pdf, profile="ua1", cli=None: VeraResult(passed=True, profile=profile),
+    )
 
 
 def _api(tmp_path: Path) -> SpeadeApi:
@@ -54,9 +69,54 @@ def test_run_batch_then_list_queue_round_trip(tmp_path):
     assert [(item["file"], item["status"]) for item in queue] == [("a.pdf", "draft")]
 
 
-def test_decide_records_and_returns_json_safe(tmp_path, monkeypatch):
-    from speade import service
+def test_batch_start_and_status_drive_the_progress_bar(tmp_path):
+    api = _api(tmp_path)
+    for name in ("a.pdf", "b.pdf"):
+        (tmp_path / "inbox" / name).write_bytes(PDF_BYTES)
 
+    started = api.run_batch_start()
+    assert started == {"started": True}
+
+    deadline = time.monotonic() + 10
+    status = api.run_batch_status()
+    while status.get("running") and time.monotonic() < deadline:
+        time.sleep(0.02)
+        status = api.run_batch_status()
+
+    json.dumps(status)  # the bridge contract
+    assert status["running"] is False
+    assert status["done"] == status["total"] == 2
+    assert "error" not in status
+    assert [(i["file"], i["ok"]) for i in status["items"]] == [("a.pdf", True), ("b.pdf", True)]
+
+
+def test_structure_reports_errors_as_data_not_crashes(tmp_path):
+    api = _api(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)  # too minimal to parse
+    api.run_batch()
+
+    result = api.structure("a.pdf")
+
+    json.dumps(result)
+    assert "error" in result  # unreadable/unparseable: a note for the UI, not a crash
+    assert api.structure("nope.pdf") == {"error": "not found: nope.pdf"}
+
+
+def test_audit_log_is_json_safe_and_newest_first(tmp_path, monkeypatch):
+    api = _api(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+    api.run_batch()
+    api.decide("a.pdf", reviewer="s123456", approve=True)
+
+    events = api.audit_log()
+
+    json.dumps(events)
+    assert [e["event"] for e in events[:2]] == ["verify", "run"]  # newest first
+    assert events[0]["file"] == "a.pdf"
+    assert events[0]["ts"]
+
+
+def test_decide_records_and_returns_json_safe(tmp_path, monkeypatch):
     api = _api(tmp_path)
     (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
     api.run_batch()

@@ -14,16 +14,19 @@ which is exactly what the JS bridge will need.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
-from speade.audit.log import append_event, sha256_file
+from speade.audit.log import append_event, read_events, sha256_file
 from speade.config import load_config
 from speade.pipeline import registry, runner
 from speade.pipeline.contract import Approval, ApprovalStatus, Sidecar
 from speade.validation import verapdf
+from speade.validation.structure import StructureSummary, summarize
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
@@ -96,36 +99,66 @@ def stage_mapping(config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, str]:
     return workspace(config_path).stages
 
 
+def _score_draft(ws: Workspace, sidecar: Sidecar) -> Sidecar:
+    """Run the veraPDF gate on a freshly written draft and persist the verdict,
+    so the review queue shows machine feedback IMMEDIATELY after processing --
+    the reviewer must not need Acrobat just to learn whether tagging worked.
+    Advisory only: decide() re-runs veraPDF at sign-off on the bytes being
+    approved, which stays the authoritative check."""
+    out_pdf = ws.outbox / Path(sidecar.source_path).name
+    vera = verapdf.validate(out_pdf, ws.verapdf_profile, cli=ws.verapdf_cli)
+    sidecar.verapdf_passed = vera.passed
+    sidecar.verapdf_failed_clauses = vera.failed_clauses
+    side_path = ws.sidecars / (out_pdf.name + ".sidecar.json")
+    side_path.write_text(sidecar.model_dump_json(), encoding="utf-8")
+    return sidecar
+
+
 def run_one(pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> Sidecar:
-    """Run one PDF through the configured pipeline into the outbox.
+    """Run one PDF through the configured pipeline into the outbox, then score
+    the draft with veraPDF (advisory; see _score_draft).
 
     Raises KeyError for an unknown stage implementation and lets pipeline
     failures propagate -- single-file callers want the real error.
     """
     ws = workspace(config_path)
     stages = [registry.get_stage(impl) for impl in ws.stages.values()]
-    return runner.run(pdf, stages, ws.outbox, ws.audit_log, sidecar_dir=ws.sidecars)
+    sidecar = runner.run(pdf, stages, ws.outbox, ws.audit_log, sidecar_dir=ws.sidecars)
+    return _score_draft(ws, sidecar)
 
 
 def run_batch(
-    folder: Path | None = None, config_path: Path = DEFAULT_CONFIG_PATH
+    folder: Path | None = None,
+    config_path: Path = DEFAULT_CONFIG_PATH,
+    progress: Callable[[int, int, str], None] | None = None,
 ) -> list[BatchItem]:
     """Sweep every *.pdf in `folder` (default: the configured inbox) through the
-    pipeline. Per-file failures are captured as BatchItem.error so the rest of
-    the batch still runs; a misconfigured pipeline (unknown stage) raises."""
+    pipeline, scoring each draft with veraPDF (see _score_draft). Per-file
+    failures are captured as BatchItem.error so the rest of the batch still
+    runs; a misconfigured pipeline (unknown stage) raises.
+
+    `progress`, when given, is called as (done, total, current_filename) before
+    each file and once as (total, total, "") at the end -- the desktop client's
+    per-file progress bar polls the state a callback like this maintains."""
     ws = workspace(config_path)
     src_dir = Path(folder) if folder is not None else ws.inbox
     stages = [registry.get_stage(impl) for impl in ws.stages.values()]  # fail fast on config
 
+    pdfs = sorted(p for p in src_dir.glob("*.pdf") if p.is_file())
     items: list[BatchItem] = []
-    for pdf in sorted(p for p in src_dir.glob("*.pdf") if p.is_file()):
+    for done, pdf in enumerate(pdfs):
+        if progress is not None:
+            progress(done, len(pdfs), pdf.name)
         try:
             sidecar = runner.run(pdf, stages, ws.outbox, ws.audit_log, sidecar_dir=ws.sidecars)
+            sidecar = _score_draft(ws, sidecar)
             items.append(BatchItem(file=pdf.name, ok=True, sidecar=sidecar))
         except Exception as exc:  # per-file isolation: record, continue the sweep
             items.append(
                 BatchItem(file=pdf.name, ok=False, error=f"{type(exc).__name__}: {str(exc)[:200]}")
             )
+    if progress is not None:
+        progress(len(pdfs), len(pdfs), "")
     return items
 
 
@@ -153,6 +186,20 @@ def list_queue(config_path: Path = DEFAULT_CONFIG_PATH) -> list[QueueItem]:
             )
         )
     return items
+
+
+def structure_summary(pdf: Path) -> StructureSummary:
+    """Summarise the tag structure of an outbox draft (see validation.structure):
+    the in-app answer to "is it actually tagged, and roughly how well"."""
+    return summarize(pdf)
+
+
+def audit_events(config_path: Path = DEFAULT_CONFIG_PATH, limit: int = 200) -> list[dict[str, Any]]:
+    """The audit trail, newest first, capped at `limit` -- the History view.
+    Read-only: the JSONL log itself stays append-only."""
+    ws = workspace(config_path)
+    events = read_events(ws.audit_log)
+    return list(reversed(events[-limit:]))
 
 
 def decide(
@@ -195,6 +242,8 @@ def decide(
         ws.audit_log,
         {
             "event": "verify",
+            "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+            "file": pdf.name,
             "reviewer": reviewer,
             "decision": status.value,
             "verapdf_passed": vera.passed,

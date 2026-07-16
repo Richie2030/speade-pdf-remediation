@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+import pytest
 from typer.testing import CliRunner
 
+from speade import service
 from speade.cli import app
+from speade.validation.verapdf import VeraResult
 
 cli = CliRunner()
 PDF_BYTES = b"%PDF-1.7\n%%EOF\n"
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_verapdf(monkeypatch):
+    """run/run-batch score every draft with veraPDF now -- keep the CLI tests
+    hermetic and fast with a canned pass."""
+    monkeypatch.setattr(
+        service.verapdf,
+        "validate",
+        lambda pdf, profile="ua1", cli=None: VeraResult(passed=True, profile=profile),
+    )
 
 
 def test_stages_lists_available_impls():
@@ -68,6 +82,7 @@ def test_run_batch_sweeps_a_folder(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "2/2 processed" in result.stdout
+    assert "veraPDF: pass" in result.stdout  # the advisory verdict, right in the sweep
     for name in ("a.pdf", "b.pdf"):
         assert (outbox / name).read_bytes() == PDF_BYTES
         # sidecars land in the configured folder (default: data/sidecars beside

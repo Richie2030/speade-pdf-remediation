@@ -88,7 +88,10 @@ def run_batch(
     for item in items:
         if item.ok and item.sidecar is not None:
             flags = f"  [{', '.join(item.sidecar.flags)}]" if item.sidecar.flags else ""
-            typer.echo(f"  ok    {item.file}{flags}")
+            vera = {True: "  veraPDF: pass", False: "  veraPDF: FAIL"}.get(
+                item.sidecar.verapdf_passed, ""
+            )
+            typer.echo(f"  ok    {item.file}{flags}{vera}")
         else:
             typer.echo(f"  FAIL  {item.file}: {item.error}")
     processed = sum(1 for item in items if item.ok)

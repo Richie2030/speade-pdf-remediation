@@ -71,6 +71,8 @@ def test_run_produces_outbox_copy_sidecar_and_audit_line(tmp_path):
     events = read_events(audit)
     assert len(events) == 1
     assert events[0]["event"] == "run"
+    assert events[0]["file"] == "sample.pdf"  # the History view names the document
+    assert events[0]["ts"]  # ...and shows when it happened
     assert events[0]["source_sha256"] == persisted.source_sha256
     assert events[0]["output_sha256"] == persisted.output_sha256
     assert events[0]["stages_applied"] == ["noop"]

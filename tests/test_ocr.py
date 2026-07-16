@@ -18,7 +18,14 @@ from __future__ import annotations
 import pytest
 
 from speade.pipeline.contract import Route, Sidecar
-from speade.stages.ocr import OcrLine, OcrStage, page_content, parse_hocr, quantize_sizes
+from speade.stages.ocr import (
+    OcrLine,
+    OcrStage,
+    page_content,
+    parse_hocr,
+    quantize_sizes,
+    text_width,
+)
 
 _PDF_BYTES = b"%PDF-1.7\n%%EOF\n"
 
@@ -79,6 +86,16 @@ def test_quantize_sizes_snaps_body_jitter_but_keeps_headings():
     # jittered body sizes all snap to the median; the genuinely larger heading
     # keeps its measured size (that is what makes it a heading downstream).
     assert [ln.size for ln in lines] == [40.75, 40.75, 40.75, 80.0]
+
+
+def test_text_width_uses_real_helvetica_metrics():
+    # live-testing finding: an averaged char width leaves the stretched line
+    # SHORT of its printed right edge, so the last words go untagged. Real AFM
+    # widths: 'W' (944) is wide, 'i' (222) narrow, space is 278 -- never 500 each.
+    assert text_width("Hi", 10.0) == pytest.approx((722 + 222) / 100)
+    assert text_width("W W", 10.0) == pytest.approx((944 + 278 + 944) / 100)
+    assert text_width("é", 10.0) == text_width("e", 10.0)  # accents measure as base
+    assert text_width("iii", 10.0) < text_width("WWW", 10.0)
 
 
 def test_page_content_artifacts_the_scan_and_hides_the_text():

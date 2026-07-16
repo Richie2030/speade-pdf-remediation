@@ -15,6 +15,7 @@ from __future__ import annotations
 import shutil
 from collections.abc import Iterable
 from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 
 from speade.audit.log import append_event, sha256_file
@@ -92,6 +93,8 @@ def run(
             audit_log,
             {
                 "event": "run",
+                "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+                "file": src.name,
                 "source_sha256": sidecar.source_sha256,
                 "output_sha256": sidecar.output_sha256,
                 "stages_applied": sidecar.stages_applied,
