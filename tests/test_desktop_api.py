@@ -172,3 +172,47 @@ def test_load_pdf_returns_a_data_uri(tmp_path):
 def test_add_pdfs_without_a_window_is_a_clean_error(tmp_path):
     result = _api(tmp_path).add_pdfs()
     assert result == {"error": "window not ready"}
+
+
+def test_load_pdf_still_resolves_after_a_decision_moves_the_file(tmp_path, monkeypatch):
+    # decide() sorts the PDF into outbox/approved -- every name-taking bridge
+    # method must keep finding it there (the reviewer can still preview it).
+    api = _api(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+    api.run_batch()
+    api.decide("a.pdf", reviewer="s123456", approve=True)
+
+    assert not (tmp_path / "outbox" / "a.pdf").exists()
+    assert (tmp_path / "outbox" / "approved" / "a.pdf").is_file()
+    assert api.load_pdf("a.pdf")["data_uri"].startswith("data:application/pdf;base64,")
+
+
+def test_run_batch_cancel_marks_the_finished_batch(tmp_path, monkeypatch):
+    # deterministic Stop: a fake batch that idles until the cancel flag goes up,
+    # exactly like a real batch polling `cancel` between documents.
+    api = _api(tmp_path)
+
+    def fake_run_batch(folder, config_path, progress=None, cancel=None):
+        deadline = time.monotonic() + 5
+        while not cancel() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return []
+
+    monkeypatch.setattr(service, "run_batch", fake_run_batch)
+    api.run_batch_start()
+    assert api.run_batch_cancel() == {"cancelling": True}
+
+    deadline = time.monotonic() + 10
+    while api.run_batch_status().get("running") and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+    status = api.run_batch_status()
+    json.dumps(status)
+    assert status["running"] is False
+    assert status["cancelled"] is True
+
+
+def test_doc_metadata_errors_are_data_not_crashes(tmp_path):
+    api = _api(tmp_path)
+    assert api.doc_metadata("nope.pdf") == {"error": "not found: nope.pdf"}
+    assert api.set_doc_metadata("nope.pdf", "t", "en") == {"error": "not found: nope.pdf"}

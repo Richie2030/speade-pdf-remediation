@@ -55,6 +55,7 @@ button:disabled { opacity: .5; cursor: default; }
 #progress-wrap { display: flex; align-items: center; gap: 10px; }
 #progress { width: 220px; height: 16px; accent-color: var(--ucc-navy); }
 #progress-text { font-size: 14px; color: var(--ink-muted); }
+#stop { background: var(--bad); border-color: var(--bad); color: #fff; }
 
 /* -------------------------------------------------------------- layout */
 main { flex: 1; display: flex; min-height: 0; }
@@ -104,7 +105,16 @@ main { flex: 1; display: flex; min-height: 0; }
   border: 2px solid var(--ucc-navy); border-radius: 8px; width: 190px;
 }
 .gate input:focus-visible { outline: 3px solid var(--ucc-yellow); outline-offset: 1px; }
+.gate select {
+  font: inherit; font-size: 16px; padding: 8px 10px; min-height: 42px;
+  border: 2px solid var(--ucc-navy); border-radius: 8px; background: #fff;
+}
+.gate select:focus-visible { outline: 3px solid var(--ucc-yellow); outline-offset: 1px; }
 #gate-result { flex-basis: 100%; font-size: 15px; }
+#doc-title { width: 320px; }
+#doc-lang { width: 210px; }
+#doc-lang-other { width: 160px; }
+#meta-result { flex-basis: 100%; font-size: 15px; }
 
 /* ------------------------------------------------------------- history */
 #history-pane h2 { margin: 4px 0 2px; font-size: 20px; }

@@ -49,6 +49,11 @@ class SpeadeApi:
     def attach_window(self, window) -> None:
         self._window = window
 
+    def _resolve(self, file: str) -> Path | None:
+        """A bare filename -> its current home in the outbox tree (root while a
+        draft, approved/ or rejected/ once decided). Names only, never paths."""
+        return service.find_output(Path(file).name, self._config_path)
+
     # ------------------------------------------------------------- read side
     def workspace(self) -> dict:
         ws = service.workspace(self._config_path)
@@ -71,9 +76,9 @@ class SpeadeApi:
 
     def load_pdf(self, file: str) -> dict:
         """The outbox draft as a data: URI for the embedded preview pane."""
-        pdf = service.workspace(self._config_path).outbox / Path(file).name
-        if not pdf.is_file():
-            return {"error": f"not found: {pdf.name}"}
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
         data = pdf.read_bytes()
         if len(data) > _MAX_EMBED_BYTES:
             size_mb = len(data) // (1024 * 1024)
@@ -84,9 +89,9 @@ class SpeadeApi:
     def structure(self, file: str) -> dict:
         """Plain counts of a draft's tag tree (headings, paragraphs, figures...)
         so the reviewer sees whether it is actually tagged without Acrobat."""
-        pdf = service.workspace(self._config_path).outbox / Path(file).name
-        if not pdf.is_file():
-            return {"error": f"not found: {pdf.name}"}
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
         try:
             return service.structure_summary(pdf).model_dump(mode="json")
         except Exception as exc:  # unreadable file / missing pikepdf: a note, not a crash
@@ -117,8 +122,14 @@ class SpeadeApi:
 
         def worker() -> None:
             try:
-                items = service.run_batch(None, self._config_path, progress=progress)
+                items = service.run_batch(
+                    None,
+                    self._config_path,
+                    progress=progress,
+                    cancel=lambda: bool(self._batch.get("cancel")),
+                )
                 self._batch["items"] = [item.model_dump(mode="json") for item in items]
+                self._batch["cancelled"] = bool(self._batch.get("cancel"))
             except Exception as exc:  # config errors etc. -- surfaced to the UI
                 self._batch["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
             finally:
@@ -127,14 +138,45 @@ class SpeadeApi:
         threading.Thread(target=worker, name="speade-batch", daemon=True).start()
         return {"started": True}
 
+    def run_batch_cancel(self) -> dict:
+        """The Stop button: ask the running batch to halt BETWEEN documents --
+        the file in flight always finishes, so nothing is left half-written."""
+        self._batch["cancel"] = True
+        return {"cancelling": True}
+
     def run_batch_status(self) -> dict:
         """The polled state of the running (or last) batch: running / done /
         total / current file, plus items or error once finished."""
         return dict(self._batch)
 
+    def doc_metadata(self, file: str) -> dict:
+        """The draft's current title + reading language for the editable fields."""
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
+        try:
+            return service.doc_metadata(pdf)
+        except ImportError:
+            return {"error": "metadata editing needs the tag extra (pikepdf) installed"}
+        except Exception as exc:  # unreadable file: a note for the UI, not a crash
+            return {"error": f"metadata unavailable: {str(exc)[:120]}"}
+
+    def set_doc_metadata(self, file: str, title: str, lang: str) -> dict:
+        """Apply the reviewer's title + reading language to the draft (the
+        human-authored half of the metadata; see service.set_doc_metadata)."""
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
+        try:
+            return service.set_doc_metadata(pdf, title, lang, config_path=self._config_path)
+        except ImportError:
+            return {"error": "metadata editing needs the tag extra (pikepdf) installed"}
+        except Exception as exc:
+            return {"error": f"could not save: {str(exc)[:120]}"}
+
     def decide(self, file: str, reviewer: str, approve: bool) -> dict:
         """The human gate: veraPDF verdict + the reviewer's decision (service.decide)."""
-        pdf = service.workspace(self._config_path).outbox / Path(file).name
+        pdf = self._resolve(file) or service.workspace(self._config_path).outbox / Path(file).name
         sidecar = service.decide(
             pdf, reviewer=reviewer, approve=approve, config_path=self._config_path
         )
@@ -169,8 +211,8 @@ class SpeadeApi:
 
     def open_output(self, file: str) -> bool:
         """Open a draft in the system PDF viewer (Acrobat correction round-trip)."""
-        pdf = service.workspace(self._config_path).outbox / Path(file).name
-        if not pdf.is_file():
+        pdf = self._resolve(file)
+        if pdf is None:
             return False
         _open_native(pdf)
         return True

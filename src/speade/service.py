@@ -14,6 +14,7 @@ which is exactly what the JS bridge will need.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,6 +65,26 @@ class QueueItem(BaseModel):
     verapdf_failed_clauses: list[str] = Field(default_factory=list)
     status: str = "draft"  # draft / approved / rejected
     reviewer: str | None = None
+    # do the bytes on disk still match the recorded fingerprint? None = no file /
+    # no fingerprint to compare. The UI shows this as plain language ("edited since
+    # processing"), never the raw hash -- the hashes themselves stay in the sidecar
+    # and audit log, which are the trust trail.
+    output_changed: bool | None = None
+
+
+def _hide_dir(path: Path) -> None:
+    """Mark an app-internal folder hidden on Windows so reviewers browsing the
+    data folder are not tempted to edit records by hand. Polish, not security:
+    the append-only audit log + decide()'s re-fingerprint are what make
+    tampering detectable. No-op off Windows and on any attribute failure."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    hidden = 0x2  # FILE_ATTRIBUTE_HIDDEN
+    attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
+    if attrs not in (-1, 0xFFFFFFFF) and not (attrs & hidden):
+        ctypes.windll.kernel32.SetFileAttributesW(str(path), attrs | hidden)
 
 
 def workspace(config_path: Path = DEFAULT_CONFIG_PATH) -> Workspace:
@@ -89,14 +110,37 @@ def workspace(config_path: Path = DEFAULT_CONFIG_PATH) -> Workspace:
     # files into before the first run -- nothing materialises lazily.
     ws.inbox.mkdir(parents=True, exist_ok=True)
     ws.outbox.mkdir(parents=True, exist_ok=True)
+    # decided documents are sorted into status subfolders so the outbox itself
+    # is self-explanatory: root = awaiting review, approved/ = ready to ship,
+    # rejected/ = needs manual (Acrobat) rework.
+    (ws.outbox / "approved").mkdir(parents=True, exist_ok=True)
+    (ws.outbox / "rejected").mkdir(parents=True, exist_ok=True)
     ws.sidecars.mkdir(parents=True, exist_ok=True)
     ws.audit_log.parent.mkdir(parents=True, exist_ok=True)
+    _hide_dir(ws.sidecars)
+    _hide_dir(ws.audit_log.parent)
     return ws
 
 
 def stage_mapping(config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, str]:
     """The configured stage_role -> implementation mapping, in pipeline order."""
     return workspace(config_path).stages
+
+
+def _find_output(ws: Workspace, name: str) -> Path | None:
+    """Locate an output PDF by bare filename: outbox root first (a fresh draft
+    shadows any older decided copy), then the approved/ and rejected/ subfolders."""
+    for folder in (ws.outbox, ws.outbox / "approved", ws.outbox / "rejected"):
+        candidate = folder / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def find_output(name: str, config_path: Path = DEFAULT_CONFIG_PATH) -> Path | None:
+    """Public wrapper for clients that hold only a filename (the bridge, the web
+    app): where in the outbox tree does this document currently live?"""
+    return _find_output(workspace(config_path), Path(name).name)
 
 
 def _score_draft(ws: Workspace, sidecar: Sidecar) -> Sidecar:
@@ -131,6 +175,7 @@ def run_batch(
     folder: Path | None = None,
     config_path: Path = DEFAULT_CONFIG_PATH,
     progress: Callable[[int, int, str], None] | None = None,
+    cancel: Callable[[], bool] | None = None,
 ) -> list[BatchItem]:
     """Sweep every *.pdf in `folder` (default: the configured inbox) through the
     pipeline, scoring each draft with veraPDF (see _score_draft). Per-file
@@ -138,8 +183,12 @@ def run_batch(
     runs; a misconfigured pipeline (unknown stage) raises.
 
     `progress`, when given, is called as (done, total, current_filename) before
-    each file and once as (total, total, "") at the end -- the desktop client's
-    per-file progress bar polls the state a callback like this maintains."""
+    each file and once as (processed, total, "") at the end -- the desktop
+    client's per-file progress bar polls the state a callback like this maintains.
+
+    `cancel`, when given, is polled BETWEEN documents (the Stop button): the
+    file in flight always finishes, so nothing is left half-written, and the
+    items processed so far are returned as normal."""
     ws = workspace(config_path)
     src_dir = Path(folder) if folder is not None else ws.inbox
     stages = [registry.get_stage(impl) for impl in ws.stages.values()]  # fail fast on config
@@ -147,6 +196,8 @@ def run_batch(
     pdfs = sorted(p for p in src_dir.glob("*.pdf") if p.is_file())
     items: list[BatchItem] = []
     for done, pdf in enumerate(pdfs):
+        if cancel is not None and cancel():
+            break
         if progress is not None:
             progress(done, len(pdfs), pdf.name)
         try:
@@ -158,7 +209,7 @@ def run_batch(
                 BatchItem(file=pdf.name, ok=False, error=f"{type(exc).__name__}: {str(exc)[:200]}")
             )
     if progress is not None:
-        progress(len(pdfs), len(pdfs), "")
+        progress(len(items), len(pdfs), "")
     return items
 
 
@@ -173,6 +224,12 @@ def list_queue(config_path: Path = DEFAULT_CONFIG_PATH) -> list[QueueItem]:
         except Exception:  # a mangled sidecar must not hide the rest of the queue
             items.append(QueueItem(file=pdf_name, route="unknown", status="invalid-sidecar"))
             continue
+        # compare the bytes on disk with the recorded fingerprint, so the UI can
+        # say "edited since processing" (e.g. an Acrobat fix) in plain language.
+        out_pdf = _find_output(ws, pdf_name)
+        changed: bool | None = None
+        if out_pdf is not None and sidecar.output_sha256:
+            changed = sha256_file(out_pdf) != sidecar.output_sha256
         items.append(
             QueueItem(
                 file=pdf_name,
@@ -183,9 +240,78 @@ def list_queue(config_path: Path = DEFAULT_CONFIG_PATH) -> list[QueueItem]:
                 verapdf_failed_clauses=sidecar.verapdf_failed_clauses,
                 status=sidecar.approval.status.value,
                 reviewer=sidecar.approval.reviewer,
+                output_changed=changed,
             )
         )
     return items
+
+
+def doc_metadata(pdf: Path) -> dict[str, str]:
+    """The draft's current display title (dc:title) and reading language (/Lang)
+    -- what the review UI shows in its editable metadata fields. Requires the
+    `tag` extra (pikepdf); the caller turns an ImportError into a UI note."""
+    import pikepdf  # lazy: an optional extra, like the tag stage's finish step
+
+    with pikepdf.open(pdf) as doc:
+        lang = str(doc.Root.get("/Lang", "") or "")
+        with doc.open_metadata() as meta:
+            title = str(meta.get("dc:title", "") or "")
+    return {"title": title, "lang": lang}
+
+
+def set_doc_metadata(
+    pdf: Path,
+    title: str,
+    lang: str,
+    config_path: Path = DEFAULT_CONFIG_PATH,
+) -> dict[str, str]:
+    """Apply the REVIEWER'S title and reading language to an outbox draft -- the
+    human-gate half of the metadata story (the tag stage only stamps defaults).
+    Title and language are judgment calls (7.1-9 dc:title, 7.2 /Lang), so they
+    are human-authored here, never auto-detected.
+
+    Writes via a temp file then replaces, refreshes the sidecar fingerprint
+    (an app-made edit must not read as external tampering in the queue), and
+    audit-logs the change. Empty fields leave the existing value untouched."""
+    import pikepdf  # lazy: an optional extra, like the tag stage's finish step
+
+    ws = workspace(config_path)
+    title, lang = title.strip(), lang.strip()
+    tmp = pdf.with_name(pdf.name + ".meta.tmp")
+    with pikepdf.open(pdf) as doc:
+        if lang:
+            doc.Root.Lang = pikepdf.String(lang)
+        if doc.Root.get("/ViewerPreferences") is None:
+            doc.Root.ViewerPreferences = pikepdf.Dictionary()
+        doc.Root.ViewerPreferences.DisplayDocTitle = True  # 7.1-10: show title, not filename
+        if title:
+            with doc.open_metadata() as meta:
+                meta["dc:title"] = title
+        doc.save(tmp)
+    tmp.replace(pdf)
+
+    new_sha = sha256_file(pdf)
+    side_path = ws.sidecars / (pdf.name + ".sidecar.json")
+    if side_path.is_file():
+        try:
+            sidecar = Sidecar.model_validate_json(side_path.read_text(encoding="utf-8"))
+            sidecar.output_sha256 = new_sha
+            side_path.write_text(sidecar.model_dump_json(indent=2), encoding="utf-8", newline="\n")
+        except Exception:  # a mangled sidecar: the metadata edit itself still stands
+            pass
+
+    append_event(
+        ws.audit_log,
+        {
+            "event": "edit-metadata",
+            "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+            "file": pdf.name,
+            "title": title or None,
+            "lang": lang or None,
+            "output_sha256": new_sha,
+        },
+    )
+    return doc_metadata(pdf)
 
 
 def structure_summary(pdf: Path) -> StructureSummary:
@@ -238,6 +364,18 @@ def decide(
     sidecar.approval = Approval(status=status, reviewer=reviewer, decided_at=datetime.now(UTC))
     side_path.write_text(sidecar.model_dump_json(indent=2), encoding="utf-8", newline="\n")
 
+    # sort the decided document into its status subfolder, so the outbox itself
+    # reads as a workflow: root = awaiting review, approved/ = ready to ship,
+    # rejected/ = needs manual rework. Only files inside the outbox tree move --
+    # a decision on a PDF elsewhere (CLI with an odd path) records but stays put.
+    moved_to: str | None = None
+    dest_dir = ws.outbox / ("approved" if approve else "rejected")
+    outbox_tree = (ws.outbox, ws.outbox / "approved", ws.outbox / "rejected")
+    if pdf.resolve().parent in outbox_tree and pdf.resolve().parent != dest_dir:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        pdf.resolve().replace(dest_dir / pdf.name)
+        moved_to = f"outbox/{dest_dir.name}"
+
     append_event(
         ws.audit_log,
         {
@@ -248,6 +386,7 @@ def decide(
             "decision": status.value,
             "verapdf_passed": vera.passed,
             "output_sha256": sidecar.output_sha256,
+            **({"moved_to": moved_to} if moved_to else {}),
         },
     )
     return sidecar

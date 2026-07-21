@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>SPEADE — PDF Accessibility</title>
+  <title>SPEADE PDF Accessibility</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -23,6 +23,7 @@
     <div id="progress-wrap" hidden>
       <progress id="progress" max="1" value="0"></progress>
       <span id="progress-text"></span>
+      <button id="stop" hidden>Stop</button>
     </div>
     <span id="status" class="muted" role="status" aria-live="polite"></span>
   </div>
@@ -35,7 +36,7 @@
         <p><b>How it works:</b></p>
         <p>1. Click <b>Add PDFs&hellip;</b> to pick documents (or drop them in the
            input folder shown above).</p>
-        <p>2. Click <b>Process PDFs</b> — the app recognises text in scans and adds
+        <p>2. Click <b>Process PDFs</b>, the app recognises text in scans and adds
            accessibility tags.</p>
         <p>3. Pick a document from the list, check it, and record your decision.</p>
       </div>
@@ -56,14 +57,59 @@
           <div id="preview-note" class="muted" hidden></div>
         </div>
 
+        <div class="gate" id="meta-box">
+          <div class="gate-title">Title and reading language, screen readers announce
+            both. Check they are right (the title is what a student hears, not the
+            filename) and save before you decide.</div>
+          <label for="doc-title">Title</label>
+          <input id="doc-title" type="text" placeholder="e.g. Week 3 Lecture Notes" autocomplete="off">
+          <label for="doc-lang">Language</label>
+          <select id="doc-lang">
+            <option value="">(not set)</option>
+            <option value="en-IE">English (Ireland)</option>
+            <option value="en-GB">English (UK)</option>
+            <option value="en-US">English (US)</option>
+            <option value="en">English</option>
+            <option value="ga">Irish / Gaeilge</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+            <option value="es">Spanish</option>
+            <option value="it">Italian</option>
+            <option value="pt">Portuguese</option>
+            <option value="nl">Dutch</option>
+            <option value="pl">Polish</option>
+            <option value="ro">Romanian</option>
+            <option value="lt">Lithuanian</option>
+            <option value="lv">Latvian</option>
+            <option value="cs">Czech</option>
+            <option value="sk">Slovak</option>
+            <option value="hu">Hungarian</option>
+            <option value="hr">Croatian</option>
+            <option value="uk">Ukrainian</option>
+            <option value="ru">Russian</option>
+            <option value="el">Greek</option>
+            <option value="tr">Turkish</option>
+            <option value="ar">Arabic</option>
+            <option value="hi">Hindi</option>
+            <option value="ur">Urdu</option>
+            <option value="zh">Chinese</option>
+            <option value="ja">Japanese</option>
+            <option value="ko">Korean</option>
+            <option value="__other">Other&hellip;</option>
+          </select>
+          <input id="doc-lang-other" type="text" placeholder="language code, e.g. cy" autocomplete="off" hidden>
+          <button id="save-meta">Save title &amp; language</button>
+          <div id="meta-result" class="muted"></div>
+        </div>
+
         <div class="gate">
-          <div class="gate-title">Your decision — the app only makes a draft.
+          <div class="gate-title">Your decision, the app only makes a draft.
             Check the document (fix anything needed in Adobe Acrobat first),
             then decide. Approving is the final step.</div>
           <label for="reviewer">Your student number</label>
           <input id="reviewer" type="text" placeholder="e.g. 123456789" autocomplete="off">
-          <button id="approve" class="approve">Approve — ready to share</button>
-          <button id="reject" class="reject">Reject — needs more work</button>
+          <button id="approve" class="approve">Approve - ready to share</button>
+          <button id="reject" class="reject">Reject - needs more work</button>
           <div id="gate-result" class="muted"></div>
         </div>
       </div>

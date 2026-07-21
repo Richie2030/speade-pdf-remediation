@@ -1,0 +1,143 @@
+"""The FastAPI app behind the localhost web client.
+
+A thin HTTP skin over the same SpeadeApi bridge the desktop window uses --
+no pipeline or gate logic here (that is service.py's job, once, for every
+front door). Endpoints mirror the bridge method-for-method; the two places
+a browser cannot do what a native window can get substitutes:
+
+- add_pdfs (native file dialog)  -> POST /api/upload (multipart into the inbox)
+- embedded preview via data: URI -> GET /api/pdf (the browser renders it inline)
+
+open_output / open_outbox still work: the server IS the user's machine
+(127.0.0.1 only), so os.startfile lands on their own desktop.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi import FastAPI, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from speade import service
+from speade.desktop.api import SpeadeApi
+from speade.service import DEFAULT_CONFIG_PATH
+
+UI_DIR = Path(__file__).resolve().parent.parent / "desktop" / "ui"
+WEB_API_JS = Path(__file__).resolve().parent / "api.js"
+
+
+class DecideBody(BaseModel):
+    file: str
+    reviewer: str
+    approve: bool
+
+
+class MetadataBody(BaseModel):
+    file: str
+    title: str = ""
+    lang: str = ""
+
+
+class FileBody(BaseModel):
+    file: str
+
+
+def create_app(config_path: Path | None = None) -> FastAPI:
+    cfg = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+    bridge = SpeadeApi(cfg)  # headless: no window; uploads replace the native dialog
+    app = FastAPI(title="SPEADE PDF Accessibility", docs_url=None, redoc_url=None)
+
+    # ------------------------------------------------------------- the UI
+    @app.get("/")
+    def index() -> FileResponse:
+        return FileResponse(UI_DIR / "index.html")
+
+    @app.get("/api.js")
+    def api_js() -> FileResponse:
+        # THE seam: the web delivery's api.js shadows the desktop one.
+        return FileResponse(WEB_API_JS, media_type="text/javascript")
+
+    # ------------------------------------------------------------ read side
+    @app.get("/api/workspace")
+    def workspace() -> dict:
+        return bridge.workspace()
+
+    @app.get("/api/reviewer_default")
+    def reviewer_default() -> dict:
+        return {"reviewer": bridge.reviewer_default()}
+
+    @app.get("/api/list_queue")
+    def list_queue() -> list[dict]:
+        return bridge.list_queue()
+
+    @app.get("/api/pdf")
+    def pdf(file: str):
+        found = service.find_output(file, cfg)
+        if found is None:
+            return JSONResponse({"error": f"not found: {Path(file).name}"}, status_code=404)
+        return FileResponse(found, media_type="application/pdf")
+
+    @app.get("/api/structure")
+    def structure(file: str) -> dict:
+        return bridge.structure(file)
+
+    @app.get("/api/metadata")
+    def metadata(file: str) -> dict:
+        return bridge.doc_metadata(file)
+
+    @app.get("/api/audit_log")
+    def audit_log(limit: int = 200) -> list[dict]:
+        return bridge.audit_log(limit)
+
+    @app.get("/api/run_batch_status")
+    def run_batch_status() -> dict:
+        return bridge.run_batch_status()
+
+    # ----------------------------------------------------------- write side
+    @app.post("/api/run_batch_start")
+    def run_batch_start() -> dict:
+        return bridge.run_batch_start()
+
+    @app.post("/api/run_batch_cancel")
+    def run_batch_cancel() -> dict:
+        return bridge.run_batch_cancel()
+
+    @app.post("/api/decide")
+    def decide(body: DecideBody):
+        try:
+            return bridge.decide(body.file, body.reviewer, body.approve)
+        except FileNotFoundError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+
+    @app.post("/api/metadata")
+    def set_metadata(body: MetadataBody) -> dict:
+        return bridge.set_doc_metadata(body.file, body.title, body.lang)
+
+    @app.post("/api/upload")
+    async def upload(files: list[UploadFile]) -> dict:
+        """The browser's stand-in for the native Add PDFs dialog: multipart
+        uploads land in the inbox, names stripped of any path components."""
+        inbox = service.workspace(cfg).inbox
+        copied: list[str] = []
+        for item in files:
+            name = Path(item.filename or "").name
+            if not name.lower().endswith(".pdf"):
+                continue
+            (inbox / name).write_bytes(await item.read())
+            copied.append(name)
+        return {"copied": copied}
+
+    @app.post("/api/open_output")
+    def open_output(body: FileBody) -> dict:
+        return {"ok": bridge.open_output(body.file)}
+
+    @app.post("/api/open_outbox")
+    def open_outbox() -> dict:
+        return {"ok": bridge.open_outbox()}
+
+    # static assets last: routes above (incl. /api.js) win over the mount.
+    app.mount("/", StaticFiles(directory=UI_DIR), name="ui")
+    return app

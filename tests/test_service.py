@@ -85,8 +85,10 @@ def test_run_batch_sweeps_the_configured_inbox(tmp_path):
     for name in ("a.pdf", "b.pdf"):
         assert (tmp_path / "outbox" / name).read_bytes() == PDF_BYTES
         assert (tmp_path / "sidecars" / f"{name}.sidecar.json").is_file()
-    # the outbox itself holds deliverable PDFs only -- no sidecar clutter.
-    assert sorted(p.name for p in (tmp_path / "outbox").iterdir()) == ["a.pdf", "b.pdf"]
+    # the outbox itself holds deliverable PDFs only -- no sidecar clutter
+    # (approved/ and rejected/ status folders are part of the workspace contract).
+    outbox_entries = sorted(p.name for p in (tmp_path / "outbox").iterdir())
+    assert outbox_entries == ["a.pdf", "approved", "b.pdf", "rejected"]
     audit = (tmp_path / "audit" / "audit.jsonl").read_text(encoding="utf-8")
     assert len(audit.splitlines()) == 2  # one audit line per file
 
@@ -287,6 +289,109 @@ def test_decide_requires_the_pdf_itself(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="PDF not found"):
         service.decide(missing, reviewer="x", approve=True, config_path=config)
+
+
+def test_decide_moves_the_pdf_into_its_status_folder(tmp_path):
+    # the outbox reads as a workflow: root = awaiting review, approved/ =
+    # ready to ship, rejected/ = needs manual rework.
+    config = _write_config(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+    service.run_batch(None, config)
+
+    service.decide(tmp_path / "outbox" / "a.pdf", reviewer="s1", approve=True, config_path=config)
+
+    assert not (tmp_path / "outbox" / "a.pdf").exists()
+    assert (tmp_path / "outbox" / "approved" / "a.pdf").read_bytes() == PDF_BYTES
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "audit" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-1]["moved_to"] == "outbox/approved"
+
+    # a change of mind moves it between status folders, not back to root.
+    service.decide(
+        tmp_path / "outbox" / "approved" / "a.pdf", reviewer="s1", approve=False, config_path=config
+    )
+    assert not (tmp_path / "outbox" / "approved" / "a.pdf").exists()
+    assert (tmp_path / "outbox" / "rejected" / "a.pdf").is_file()
+
+
+def test_find_output_checks_the_status_folders(tmp_path):
+    config = _write_config(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+    service.run_batch(None, config)
+
+    assert service.find_output("a.pdf", config) == (tmp_path / "outbox" / "a.pdf").resolve()
+    service.decide(tmp_path / "outbox" / "a.pdf", reviewer="s1", approve=True, config_path=config)
+    assert (
+        service.find_output("a.pdf", config)
+        == (tmp_path / "outbox" / "approved" / "a.pdf").resolve()
+    )
+    assert service.find_output("nope.pdf", config) is None
+
+
+def test_run_batch_cancel_stops_between_documents(tmp_path):
+    # the Stop button's contract: polled between files, the file in flight
+    # finishes, everything after is skipped.
+    config = _write_config(tmp_path)
+    for name in ("a.pdf", "b.pdf", "c.pdf"):
+        (tmp_path / "inbox" / name).write_bytes(PDF_BYTES)
+    processed: list[str] = []
+
+    def cancel_after_one() -> bool:
+        return len(processed) >= 1
+
+    items = service.run_batch(
+        None,
+        config,
+        progress=lambda d, t, f: processed.append(f) if f else None,
+        cancel=cancel_after_one,
+    )
+
+    assert [item.file for item in items] == ["a.pdf"]
+    assert not (tmp_path / "outbox" / "b.pdf").exists()
+
+
+def test_list_queue_reports_whether_the_output_changed(tmp_path):
+    # the UI shows this as plain language ("edited since processing"), never
+    # the raw hash -- but the comparison is hash-backed.
+    config = _write_config(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+    service.run_batch(None, config)
+
+    assert service.list_queue(config)[0].output_changed is False
+
+    (tmp_path / "outbox" / "a.pdf").write_bytes(b"%PDF-1.7\n% acrobat fix\n%%EOF\n")
+    assert service.list_queue(config)[0].output_changed is True
+
+
+def test_set_doc_metadata_applies_title_and_language(tmp_path):
+    pikepdf = pytest.importorskip("pikepdf")
+    config = _write_config(tmp_path)
+    src = tmp_path / "inbox" / "a.pdf"
+    with pikepdf.new() as doc:
+        doc.add_blank_page()
+        doc.save(src)
+    service.run_batch(None, config)
+    out = tmp_path / "outbox" / "a.pdf"
+
+    result = service.set_doc_metadata(out, "Week 3 Notes", "en-IE", config_path=config)
+
+    assert result == {"title": "Week 3 Notes", "lang": "en-IE"}
+    assert service.doc_metadata(out) == {"title": "Week 3 Notes", "lang": "en-IE"}
+    # an app-made edit refreshes the sidecar fingerprint, so the queue does not
+    # report it as an external change.
+    assert service.list_queue(config)[0].output_changed is False
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "audit" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-1]["event"] == "edit-metadata"
+    assert events[-1]["title"] == "Week 3 Notes"
+
+    # empty fields leave existing values untouched (the human edits one at a time).
+    service.set_doc_metadata(out, "", "", config_path=config)
+    assert service.doc_metadata(out) == {"title": "Week 3 Notes", "lang": "en-IE"}
 
 
 def test_run_one_unknown_stage_fails_fast(tmp_path):

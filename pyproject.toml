@@ -35,6 +35,10 @@ ocr = ["pikepdf>=10.9", "pypdfium2>=4"]
 # The desktop review client: a pywebview (BSD) native window hosting ui/ over
 # the js_api bridge -- no web framework, no server (frontend-delivery record).
 desktop = ["pywebview>=5.1"]
+# The localhost web client: the SAME ui/ served from a 127.0.0.1-only FastAPI
+# app (second delivery of the one UI; no hosting, no auth -- it never leaves
+# the machine). fastapi MIT, uvicorn BSD, python-multipart Apache-2.0.
+web = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9"]
 # struct = ["docling-slim>=2.107"]         # structure parser; use -slim to AVOID pulling torch
 # NOTE: no LLM/VLM client (ollama, etc.) — the alt-text stage is ruled out; alt-text is human-authored.
 
@@ -47,6 +51,8 @@ dev = [
     "pypdf>=6.14",
     "cyclonedx-bom>=4",
     "pre-commit>=3.7",
+    # transport for fastapi.testclient in test_web (the web extra's own tests).
+    "httpx>=0.27",
 ]
 
 [build-system]
