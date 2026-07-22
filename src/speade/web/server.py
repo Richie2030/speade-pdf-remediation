@@ -73,6 +73,10 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     def list_queue() -> list[dict]:
         return bridge.list_queue()
 
+    @app.get("/api/list_pending")
+    def list_pending() -> list[str]:
+        return bridge.list_pending()
+
     @app.get("/api/pdf")
     def pdf(file: str):
         found = service.find_output(file, cfg)
@@ -83,6 +87,14 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     @app.get("/api/structure")
     def structure(file: str) -> dict:
         return bridge.structure(file)
+
+    @app.get("/api/structure_tree")
+    def structure_tree(file: str) -> dict:
+        return bridge.structure_tree(file)
+
+    @app.get("/api/page_image")
+    def page_image(file: str, index: int = 0) -> dict:
+        return bridge.page_image(file, index)
 
     @app.get("/api/metadata")
     def metadata(file: str) -> dict:
@@ -133,6 +145,10 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     @app.post("/api/open_output")
     def open_output(body: FileBody) -> dict:
         return {"ok": bridge.open_output(body.file)}
+
+    @app.post("/api/open_inbox")
+    def open_inbox() -> dict:
+        return {"ok": bridge.open_inbox()}
 
     @app.post("/api/open_outbox")
     def open_outbox() -> dict:

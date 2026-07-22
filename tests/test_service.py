@@ -147,6 +147,39 @@ def test_list_queue_summarises_outbox_sidecars(tmp_path):
     assert item.reviewer is None
 
 
+def test_run_batch_skips_already_processed_unchanged_files(tmp_path):
+    # live-testing finding: process 2, add 1, process again -- the old 2 must
+    # NOT run again (wasted minutes, re-drafted documents). A replaced source
+    # (new bytes) and reprocess=True do run again.
+    config = _write_config(tmp_path)
+    for name in ("a.pdf", "b.pdf"):
+        (tmp_path / "inbox" / name).write_bytes(PDF_BYTES)
+    service.run_batch(None, config)
+    (tmp_path / "inbox" / "c.pdf").write_bytes(PDF_BYTES)
+
+    items = {i.file: i for i in service.run_batch(None, config)}
+
+    assert items["a.pdf"].skipped and items["b.pdf"].skipped
+    assert items["c.pdf"].ok and not items["c.pdf"].skipped
+
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES + b"% new version\n")
+    again = {i.file: i for i in service.run_batch(None, config)}
+    assert not again["a.pdf"].skipped  # replaced source: processed again
+    assert again["b.pdf"].skipped and again["c.pdf"].skipped
+
+    forced = service.run_batch(None, config, reprocess=True)
+    assert all(not i.skipped for i in forced)
+
+
+def test_list_pending_reflects_unprocessed_inbox_files(tmp_path):
+    config = _write_config(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+
+    assert service.list_pending(config) == ["a.pdf"]
+    service.run_batch(None, config)
+    assert service.list_pending(config) == []
+
+
 def test_run_batch_reports_per_file_progress(tmp_path):
     config = _write_config(tmp_path)
     for name in ("a.pdf", "b.pdf"):

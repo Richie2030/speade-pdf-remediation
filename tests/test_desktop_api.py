@@ -69,6 +69,15 @@ def test_run_batch_then_list_queue_round_trip(tmp_path):
     assert [(item["file"], item["status"]) for item in queue] == [("a.pdf", "draft")]
 
 
+def test_list_pending_shows_waiting_then_clears(tmp_path):
+    api = _api(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+
+    assert api.list_pending() == ["a.pdf"]  # the "Waiting to process" section
+    api.run_batch()
+    assert api.list_pending() == []
+
+
 def test_batch_start_and_status_drive_the_progress_bar(tmp_path):
     api = _api(tmp_path)
     for name in ("a.pdf", "b.pdf"):
@@ -100,6 +109,28 @@ def test_structure_reports_errors_as_data_not_crashes(tmp_path):
     json.dumps(result)
     assert "error" in result  # unreadable/unparseable: a note for the UI, not a crash
     assert api.structure("nope.pdf") == {"error": "not found: nope.pdf"}
+
+
+def test_structure_tree_and_page_image_are_json_safe(tmp_path):
+    pikepdf = pytest.importorskip("pikepdf", reason="needs --extra tag")
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    api = _api(tmp_path)
+    doc = pikepdf.Pdf.new()
+    doc.add_blank_page(page_size=(612, 792))
+    doc.save(tmp_path / "inbox" / "a.pdf")
+    api.run_batch()
+
+    tree = api.structure_tree("a.pdf")
+    json.dumps(tree)  # the bridge contract
+    assert tree["tagged"] is False  # a blank page has no tags yet
+
+    image = api.page_image("a.pdf", 0)
+    json.dumps(image)
+    assert image["data_uri"].startswith("data:image/png;base64,")
+    assert image["pages"] == 1
+    assert "error" in api.page_image("a.pdf", 5)  # out of range: a note, not a crash
+    assert api.structure_tree("nope.pdf") == {"error": "not found: nope.pdf"}
+    assert api.page_image("nope.pdf") == {"error": "not found: nope.pdf"}
 
 
 def test_audit_log_is_json_safe_and_newest_first(tmp_path, monkeypatch):
@@ -192,7 +223,7 @@ def test_run_batch_cancel_marks_the_finished_batch(tmp_path, monkeypatch):
     # exactly like a real batch polling `cancel` between documents.
     api = _api(tmp_path)
 
-    def fake_run_batch(folder, config_path, progress=None, cancel=None):
+    def fake_run_batch(folder, config_path, progress=None, cancel=None, reprocess=False):
         deadline = time.monotonic() + 5
         while not cancel() and time.monotonic() < deadline:
             time.sleep(0.01)

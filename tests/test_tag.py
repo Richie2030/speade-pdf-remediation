@@ -18,6 +18,7 @@ test fakes `subprocess.run` to exercise the real `_tag` -- mirroring test_verapd
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -44,7 +45,9 @@ def test_scanned_route_skips_engine_and_flags(tmp_path, monkeypatch):
     # must skip it, flag it, and NOT touch the engine.
     calls = []
     stage = TagStage()
-    monkeypatch.setattr(stage, "_tag", lambda pdf, out, title: calls.append((pdf, out)))
+    monkeypatch.setattr(
+        stage, "_tag", lambda pdf, out, title, strip_background=False: calls.append((pdf, out))
+    )
 
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(_PDF_BYTES)
@@ -64,7 +67,7 @@ def test_unknown_route_tags_anyway_with_reviewer_flag(tmp_path, monkeypatch):
     # structure now -- and the flag sends the reviewer to check coverage.
     calls = []
 
-    def fake_tag(pdf, out, title):
+    def fake_tag(pdf, out, title, strip_background=False):
         calls.append((pdf, out))
         out.write_bytes(b"%PDF-1.7 tagged\n%%EOF\n")
 
@@ -87,7 +90,9 @@ def test_unreadable_input_skips_engine_and_flags(tmp_path, monkeypatch):
     # the engine -- it flows to the gate untouched, reason already recorded.
     calls = []
     stage = TagStage()
-    monkeypatch.setattr(stage, "_tag", lambda pdf, out, title: calls.append((pdf, out)))
+    monkeypatch.setattr(
+        stage, "_tag", lambda pdf, out, title, strip_background=False: calls.append((pdf, out))
+    )
 
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(_PDF_BYTES)
@@ -108,7 +113,9 @@ def test_already_tagged_pdf_skips_engine_and_flags(tmp_path, monkeypatch):
     # the engine when it is already tagged, and be left untouched.
     calls = []
     stage = TagStage()
-    monkeypatch.setattr(stage, "_tag", lambda pdf, out, title: calls.append((pdf, out)))
+    monkeypatch.setattr(
+        stage, "_tag", lambda pdf, out, title, strip_background=False: calls.append((pdf, out))
+    )
 
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(_PDF_BYTES)
@@ -130,7 +137,7 @@ def test_born_digital_route_invokes_engine_and_writes_new_file(tmp_path, monkeyp
     # A born-digital doc goes to the engine, which writes a NEW tagged copy.
     calls = []
 
-    def fake_tag(pdf, out, title):
+    def fake_tag(pdf, out, title, strip_background=False):
         calls.append((pdf, out))
         out.write_bytes(b"%PDF-1.7 tagged\n%%EOF\n")  # pretend the engine tagged it
 
@@ -155,7 +162,9 @@ def test_born_digital_never_mutates_the_input(tmp_path, monkeypatch):
     # The do-not-degrade invariant: tag writes a new file and leaves its input
     # byte-for-byte intact, even though this stage changes the PDF.
     stage = TagStage()
-    monkeypatch.setattr(stage, "_tag", lambda pdf, out, title: out.write_bytes(b"tagged"))
+    monkeypatch.setattr(
+        stage, "_tag", lambda pdf, out, title, strip_background=False: out.write_bytes(b"tagged")
+    )
 
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(_PDF_BYTES)
@@ -172,7 +181,7 @@ def test_title_comes_from_the_original_name_not_the_working_copy(tmp_path, monke
     # filename stem from the sidecar, never the working copy's stem.
     titles = []
 
-    def fake_tag(pdf, out, title):
+    def fake_tag(pdf, out, title, strip_background=False):
         titles.append(title)
         out.write_bytes(b"%PDF-1.7 tagged\n%%EOF\n")
 
@@ -237,6 +246,57 @@ def test_finish_stamps_conformance_bits_and_original_title(tmp_path, monkeypatch
         with doc.open_metadata() as meta:
             assert meta["dc:title"] == "doc"
             assert meta["pdfuaid:part"] == "1"
+
+
+def test_ocr_layered_pages_keep_their_background_but_hide_it_from_the_engine(tmp_path, monkeypatch):
+    # The Figure-box fix: for OCR-built pages the engine must be shown a copy
+    # WITHOUT the scan image (so no per-page Figure tag is created), and the
+    # final output must carry the image again as an untagged background.
+    pikepdf = pytest.importorskip("pikepdf", reason="needs --extra tag")
+    PIL_Image = pytest.importorskip("PIL.Image", reason="needs Pillow (via pikepdf)")
+    from speade.stages.ocr import OcrLine, add_page
+
+    # a genuine OCR-shaped page: scan image in an artifact block + one text line
+    src_pdf = pikepdf.Pdf.new()
+    line = OcrLine(text="Hello scan", x0=100, y0=200, x1=900, y1=260, size=40, baseline_dy=-8)
+    add_page(src_pdf, PIL_Image.new("RGB", (1000, 1400), "white"), [line])
+    pdf = tmp_path / "doc.ocr.pdf"
+    src_pdf.save(pdf)
+
+    engine_saw = {}
+
+    def fake_run(cmd, **kwargs):
+        engine_input = Path(cmd[1])
+        with pikepdf.open(engine_input) as seen:
+            data = seen.pages[0].obj.Contents.read_bytes()
+            xobjects = seen.pages[0].obj.get("/Resources", {}).get("/XObject")
+            engine_saw["artifact"] = data.startswith(b"/Artifact BMC")
+            engine_saw["has_image"] = xobjects is not None and "/Im0" in xobjects
+        outdir = Path(cmd[cmd.index("--output-dir") + 1])
+        shutil.copyfile(engine_input, outdir / "doc.ocr_tagged.pdf")  # "tagged"
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(tag_module.subprocess, "run", fake_run)
+
+    sidecar = Sidecar(
+        source_path="inbox/doc.pdf",
+        source_sha256="0",
+        route=Route.BORN_DIGITAL,
+        ocr_layered=True,
+    )
+    result = TagStage().run(pdf, sidecar)
+
+    # the engine never saw the scan image or the artifact block...
+    assert engine_saw == {"artifact": False, "has_image": False}
+    # ...but the output has both back: image as background, text intact.
+    # (contents_add makes /Contents an array of streams -- coalesce to read.)
+    with pikepdf.open(result.output) as doc:
+        page = doc.pages[0]
+        page.contents_coalesce()
+        data = page.obj.Contents.read_bytes()
+        assert data.startswith(b"/Artifact BMC")
+        assert b"(Hello scan)" in data
+        assert "/Im0" in page.obj.Resources.XObject
 
 
 def test_missing_engine_fails_loud(tmp_path, monkeypatch):

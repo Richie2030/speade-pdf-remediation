@@ -421,7 +421,10 @@ class OcrStage:
 
         # Success: the doc now carries a real text layer, so it can be tagged like
         # a born-digital PDF. Re-route so the tag stage proceeds instead of skipping.
+        # ocr_layered tells tag that every page is OUR image+text build, so the
+        # page scans are background -- not content to wrap in a Figure.
         sidecar.route = Route.BORN_DIGITAL
+        sidecar.ocr_layered = True
         sidecar.applied(self.name)
         return StageResult(
             stage=self.name,

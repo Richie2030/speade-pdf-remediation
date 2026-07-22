@@ -10,7 +10,6 @@
     <img id="logo" src="ucc-logo.png" alt="University College Cork">
     <div class="head-text">
       <h1>SPEADE <span>PDF Accessibility</span></h1>
-      <div id="paths" class="paths"></div>
     </div>
   </header>
 
@@ -18,6 +17,7 @@
     <button id="add">Add PDFs&hellip;</button>
     <button id="run" class="primary">Process PDFs</button>
     <button id="refresh">Refresh list</button>
+    <button id="open-inbox">Open input folder</button>
     <button id="open-outbox">Open output folder</button>
     <button id="history">History</button>
     <div id="progress-wrap" hidden>
@@ -45,6 +45,7 @@
         <div class="detail-head">
           <h2 id="doc-name"></h2>
           <div>
+            <button id="toggle-structure">Show tags</button>
             <button id="open-viewer">Open in PDF viewer</button>
           </div>
         </div>
@@ -55,6 +56,22 @@
         <div id="preview-wrap">
           <embed id="preview" type="application/pdf" title="Document preview">
           <div id="preview-note" class="muted" hidden></div>
+        </div>
+
+        <div id="structure-wrap" hidden>
+          <div id="tag-tree" aria-label="Tag structure — click a tag to see it on the page"></div>
+          <div id="page-side">
+            <div class="page-nav">
+              <button id="page-prev">&larr; Page</button>
+              <span id="page-label"></span>
+              <button id="page-next">Page &rarr;</button>
+            </div>
+            <div id="page-view">
+              <img id="page-img" alt="Page image">
+              <div id="page-boxes"></div>
+            </div>
+            <div id="structure-note" class="muted" hidden></div>
+          </div>
         </div>
 
         <div class="gate" id="meta-box">

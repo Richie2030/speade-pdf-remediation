@@ -27,6 +27,7 @@ const api = {
   workspace: () => getJSON("/api/workspace"),
   reviewerDefault: async () => (await getJSON("/api/reviewer_default")).reviewer,
   listQueue: () => getJSON("/api/list_queue"),
+  listPending: () => getJSON("/api/list_pending"),
 
   // The browser fetches the PDF bytes and hands app.js the same {data_uri}
   // shape the desktop bridge returns, so app.js stays delivery-agnostic.
@@ -51,11 +52,17 @@ const api = {
   runBatchStatus: () => getJSON("/api/run_batch_status"),
   runBatchCancel: () => postJSON("/api/run_batch_cancel"),
   structure: (file) => getJSON("/api/structure?file=" + encodeURIComponent(file)),
+  structureTree: (file) => getJSON("/api/structure_tree?file=" + encodeURIComponent(file)),
+  pageImage: (file, index) =>
+    getJSON(
+      "/api/page_image?file=" + encodeURIComponent(file) + "&index=" + (index || 0)
+    ),
   docMetadata: (file) => getJSON("/api/metadata?file=" + encodeURIComponent(file)),
   setDocMetadata: (file, title, lang) => postJSON("/api/metadata", { file, title, lang }),
   auditLog: (limit) => getJSON("/api/audit_log?limit=" + (limit || 200)),
   decide: (file, reviewer, approve) => postJSON("/api/decide", { file, reviewer, approve }),
   openOutput: (file) => postJSON("/api/open_output", { file }).then((r) => r.ok),
+  openInbox: () => postJSON("/api/open_inbox").then((r) => r.ok),
   openOutbox: () => postJSON("/api/open_outbox").then((r) => r.ok),
 
   // The browser's stand-in for the native file dialog: a hidden picker whose

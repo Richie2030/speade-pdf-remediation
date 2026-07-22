@@ -27,7 +27,14 @@ from speade.config import load_config
 from speade.pipeline import registry, runner
 from speade.pipeline.contract import Approval, ApprovalStatus, Sidecar
 from speade.validation import verapdf
-from speade.validation.structure import StructureSummary, summarize
+from speade.validation.structure import (
+    StructureSummary,
+    StructureTree,
+    summarize,
+)
+from speade.validation.structure import (
+    structure_tree as _structure_tree,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
@@ -50,6 +57,7 @@ class BatchItem(BaseModel):
 
     file: str
     ok: bool
+    skipped: bool = False  # already processed and unchanged: not run again
     error: str | None = None
     sidecar: Sidecar | None = None
 
@@ -70,6 +78,10 @@ class QueueItem(BaseModel):
     # processing"), never the raw hash -- the hashes themselves stay in the sidecar
     # and audit log, which are the trust trail.
     output_changed: bool | None = None
+    # did OCR actually build this document's pages? (stages_applied lists every
+    # stage that RAN, including ones that skipped themselves -- the UI needs the
+    # honest "text was recognised" signal, not the itinerary)
+    ocr_layered: bool = False
 
 
 def _hide_dir(path: Path) -> None:
@@ -171,20 +183,52 @@ def run_one(pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> Sidecar:
     return _score_draft(ws, sidecar)
 
 
+def _needs_processing(ws: Workspace, pdf: Path) -> bool:
+    """Does this inbox file still need a run? False only when a sidecar exists
+    whose recorded source fingerprint matches the file's current bytes AND its
+    output still exists somewhere in the outbox tree -- i.e. this exact document
+    was already processed. A replaced/edited source (new hash) processes again."""
+    side_path = ws.sidecars / (pdf.name + ".sidecar.json")
+    if not side_path.is_file():
+        return True
+    try:
+        sidecar = Sidecar.model_validate_json(side_path.read_text(encoding="utf-8"))
+    except Exception:  # a mangled record: reprocess rather than trust it
+        return True
+    if sidecar.source_sha256 != sha256_file(pdf):
+        return True
+    return _find_output(ws, pdf.name) is None
+
+
+def list_pending(config_path: Path = DEFAULT_CONFIG_PATH) -> list[str]:
+    """Inbox files still waiting to be processed (the sidebar's 'Waiting to
+    process' section): everything in the inbox minus already-done documents."""
+    ws = workspace(config_path)
+    return [
+        p.name for p in sorted(ws.inbox.glob("*.pdf")) if p.is_file() and _needs_processing(ws, p)
+    ]
+
+
 def run_batch(
     folder: Path | None = None,
     config_path: Path = DEFAULT_CONFIG_PATH,
     progress: Callable[[int, int, str], None] | None = None,
     cancel: Callable[[], bool] | None = None,
+    reprocess: bool = False,
 ) -> list[BatchItem]:
     """Sweep every *.pdf in `folder` (default: the configured inbox) through the
     pipeline, scoring each draft with veraPDF (see _score_draft). Per-file
     failures are captured as BatchItem.error so the rest of the batch still
     runs; a misconfigured pipeline (unknown stage) raises.
 
+    Files already processed and unchanged (see _needs_processing) are SKIPPED --
+    adding one new PDF to an inbox of ten must not re-run (and re-draft) the
+    other nine. `reprocess=True` forces everything through again (e.g. after a
+    pipeline upgrade).
+
     `progress`, when given, is called as (done, total, current_filename) before
-    each file and once as (processed, total, "") at the end -- the desktop
-    client's per-file progress bar polls the state a callback like this maintains.
+    each file and once as (processed, total, "") at the end, counting only the
+    files actually being run -- the per-file progress bar's feed.
 
     `cancel`, when given, is polled BETWEEN documents (the Stop button): the
     file in flight always finishes, so nothing is left half-written, and the
@@ -194,12 +238,16 @@ def run_batch(
     stages = [registry.get_stage(impl) for impl in ws.stages.values()]  # fail fast on config
 
     pdfs = sorted(p for p in src_dir.glob("*.pdf") if p.is_file())
-    items: list[BatchItem] = []
-    for done, pdf in enumerate(pdfs):
+    todo = [p for p in pdfs if reprocess or _needs_processing(ws, p)]
+    items: list[BatchItem] = [
+        BatchItem(file=p.name, ok=True, skipped=True) for p in pdfs if p not in todo
+    ]
+    done = 0
+    for pdf in todo:
         if cancel is not None and cancel():
             break
         if progress is not None:
-            progress(done, len(pdfs), pdf.name)
+            progress(done, len(todo), pdf.name)
         try:
             sidecar = runner.run(pdf, stages, ws.outbox, ws.audit_log, sidecar_dir=ws.sidecars)
             sidecar = _score_draft(ws, sidecar)
@@ -208,8 +256,9 @@ def run_batch(
             items.append(
                 BatchItem(file=pdf.name, ok=False, error=f"{type(exc).__name__}: {str(exc)[:200]}")
             )
+        done += 1
     if progress is not None:
-        progress(len(items), len(pdfs), "")
+        progress(done, len(todo), "")
     return items
 
 
@@ -241,6 +290,7 @@ def list_queue(config_path: Path = DEFAULT_CONFIG_PATH) -> list[QueueItem]:
                 status=sidecar.approval.status.value,
                 reviewer=sidecar.approval.reviewer,
                 output_changed=changed,
+                ocr_layered=sidecar.ocr_layered,
             )
         )
     return items
@@ -318,6 +368,12 @@ def structure_summary(pdf: Path) -> StructureSummary:
     """Summarise the tag structure of an outbox draft (see validation.structure):
     the in-app answer to "is it actually tagged, and roughly how well"."""
     return summarize(pdf)
+
+
+def structure_tree(pdf: Path) -> StructureTree:
+    """The full tag tree with page geometry (see validation.structure): the
+    in-app tags panel with Acrobat-style highlight boxes."""
+    return _structure_tree(pdf)
 
 
 def audit_events(config_path: Path = DEFAULT_CONFIG_PATH, limit: int = 200) -> list[dict[str, Any]]:

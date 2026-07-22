@@ -3,16 +3,18 @@
 
 const $ = (id) => document.getElementById(id);
 let queue = [];
+let pending = []; // inbox files still waiting to be processed
 let selected = null;
 let previewUrl = null; // blob: URL of the current preview, revoked on change
 
-// ------------------------------------------------- plain-language dictionaries
-const ROUTE_TEXT = {
-  born_digital: "Digital text",
-  scanned: "Scanned images",
-  unknown: "Mixed / unclear",
-};
+// -------- structure (tags) panel state, reset whenever the selection changes
+let structMode = false; // showing the tags panel instead of the preview?
+let structTree = null; // the fetched tree for `selected`
+let structPage = 0; // 0-based page currently shown
+let structPageCount = 0;
+let structSelectedRow = null; // the highlighted .tnode element
 
+// ------------------------------------------------- plain-language dictionaries
 const STATUS_TEXT = {
   draft: "Needs review",
   approved: "Approved",
@@ -66,6 +68,24 @@ function veraChip(item) {
 function renderQueue() {
   const box = $("queue");
   box.innerHTML = "";
+  if (pending.length) {
+    const head = document.createElement("div");
+    head.className = "qsection";
+    head.textContent = `Waiting to process (${pending.length})`;
+    box.appendChild(head);
+    for (const name of pending) {
+      const div = document.createElement("div");
+      div.className = "qitem waiting";
+      div.innerHTML =
+        `<div class="name">${name}</div>` +
+        `<div class="sub">${chip("added — press Process", "draft")}</div>`;
+      box.appendChild(div);
+    }
+    const head2 = document.createElement("div");
+    head2.className = "qsection";
+    head2.textContent = "Processed documents";
+    box.appendChild(head2);
+  }
   for (const item of queue) {
     const div = document.createElement("div");
     div.className = "qitem" + (selected === item.file ? " selected" : "");
@@ -78,13 +98,15 @@ function renderQueue() {
     div.onclick = () => select(item.file);
     box.appendChild(div);
   }
-  if (!queue.length) {
+  if (!queue.length && !pending.length) {
     box.innerHTML = '<div class="qitem muted">No documents yet, add PDFs and press Process PDFs.</div>';
   }
+  const n = pending.length;
+  $("run").textContent = n ? `Process ${n} PDF${n === 1 ? "" : "s"}` : "Process PDFs";
 }
 
 async function refresh(keepSelection = true) {
-  queue = await api.listQueue();
+  [queue, pending] = await Promise.all([api.listQueue(), api.listPending()]);
   if (!keepSelection || !queue.some((q) => q.file === selected)) selected = null;
   renderQueue();
   if (selected) renderDetail();
@@ -98,8 +120,57 @@ async function refresh(keepSelection = true) {
 function select(file) {
   selected = file;
   $("history-pane").hidden = true;
+  exitStructureMode(); // a new document starts back at the preview
+  structTree = null;
   renderQueue();
   renderDetail();
+}
+
+// What ACTUALLY happened to this document -- derived from the honest signals
+// (ocr_layered, flags), not stages_applied, which lists stages that ran even
+// when they skipped themselves (a digital PDF "ran" OCR as a pass-through).
+function processedText(item) {
+  if (item.flags.some((f) => f.startsWith("unreadable-"))) {
+    return "Could not be processed — the file is unreadable";
+  }
+  if (item.flags.includes("tag-skipped-already-tagged")) {
+    return "Already had accessibility tags — left as it was";
+  }
+  if (item.flags.includes("tag-skipped-needs-ocr")) {
+    return "Scanned document — NOT tagged (text recognition did not run)";
+  }
+  const tagged = item.stages_applied.includes("tag");
+  if (item.ocr_layered) {
+    return "Scanned document — text recognised (OCR) and tagged";
+  }
+  if (tagged && item.route === "unknown") {
+    return "Mixed content — tagged (check every part got covered)";
+  }
+  if (tagged) return "Digital document — tagged";
+  if (item.stages_applied.includes("noop")) return "Copied (no processing configured)";
+  return item.stages_applied.join(", ") || "(nothing)";
+}
+
+// Plain language for the veraPDF clause families a reviewer will actually meet;
+// the raw codes stay visible in brackets for the Acrobat/IT conversation.
+const CLAUSE_TEXT = [
+  ["7.21", "fonts not embedded properly"],
+  ["7.18", "form fields need attention"],
+  ["7.3", "images missing descriptions"],
+  ["7.2", "language settings"],
+  ["7.1", "document title/settings"],
+  ["6.2", "some content is not tagged"],
+  ["5.", "tagging declaration"],
+];
+
+function veraIssuesText(clauses) {
+  const labels = [];
+  for (const clause of clauses) {
+    const hit = CLAUSE_TEXT.find(([prefix]) => clause.startsWith(prefix));
+    const label = hit ? hit[1] : `rule ${clause}`;
+    if (!labels.includes(label)) labels.push(label);
+  }
+  return labels.join("; ");
 }
 
 function structureText(s) {
@@ -126,17 +197,20 @@ async function renderDetail() {
   $("doc-name").textContent = item.file;
   $("gate-result").textContent = "";
 
-  const clauses = (item.verapdf_failed_clauses || []).join(", ");
-  const steps = item.stages_applied.map((s) => STAGE_TEXT[s] || s).join(", ");
+  const clauses = item.verapdf_failed_clauses || [];
+  const issueText = clauses.length
+    ? `${clauses.length} issue${clauses.length === 1 ? "" : "s"}: ` +
+      `${veraIssuesText(clauses)} — fix in Acrobat, or use your judgement` +
+      ` <span class="muted">(${clauses.join(", ")})</span>`
+    : "found issues";
   $("facts").innerHTML =
-    `<dt>Document type</dt><dd>${ROUTE_TEXT[item.route] || item.route}</dd>` +
-    `<dt>What was done</dt><dd>${steps || "(nothing)"}</dd>` +
+    `<dt>Processed</dt><dd>${processedText(item)}</dd>` +
     `<dt>Automatic check</dt><dd>${
       item.verapdf_passed === null
         ? "runs after processing and again when you decide"
         : item.verapdf_passed
           ? "passed (PDF/UA accessibility rules)"
-          : "found issues" + (clauses ? ": " + clauses : "")
+          : issueText
     }</dd>` +
     `<dt>Structure</dt><dd id="structure-fact">checking&hellip;</dd>` +
     `<dt>File check</dt><dd>${
@@ -195,6 +269,163 @@ async function renderDetail() {
   } else if (!loaded.data_uri) {
     note.textContent = loaded.error || "Preview unavailable - use Open in PDF viewer.";
     note.hidden = false;
+  }
+}
+
+// ---------------------------------------------------- structure (tags) panel
+// Plain-language names for the PDF structure types reviewers will meet.
+const TYPE_TEXT = {
+  Document: "Document",
+  Part: "Part", Sect: "Section", Div: "Group", Art: "Article",
+  P: "Paragraph",
+  H: "Heading", H1: "Heading 1", H2: "Heading 2", H3: "Heading 3",
+  H4: "Heading 4", H5: "Heading 5", H6: "Heading 6",
+  L: "List", LI: "List item", Lbl: "Bullet / number", LBody: "List text",
+  Table: "Table", TR: "Table row", TD: "Table cell", TH: "Table header",
+  Figure: "Image", Formula: "Formula", Form: "Form field",
+  Link: "Link", Span: "Text piece", Note: "Note", Caption: "Caption",
+  TOC: "Contents list", TOCI: "Contents entry", BlockQuote: "Quotation",
+};
+
+function typeText(t) {
+  return TYPE_TEXT[t] || t;
+}
+
+function exitStructureMode() {
+  structMode = false;
+  $("structure-wrap").hidden = true;
+  $("preview-wrap").hidden = false;
+  $("toggle-structure").textContent = "Show tags";
+}
+
+async function toggleStructure() {
+  if (structMode) {
+    exitStructureMode();
+    return;
+  }
+  structMode = true;
+  $("preview-wrap").hidden = true;
+  $("structure-wrap").hidden = false;
+  $("toggle-structure").textContent = "Show preview";
+  const note = $("structure-note");
+  note.hidden = true;
+  if (!structTree) {
+    const file = selected;
+    $("tag-tree").innerHTML = '<div class="muted">Reading the tag structure…</div>';
+    const tree = await api.structureTree(file);
+    if (!structMode || selected !== file) return; // user moved on while we fetched
+    structTree = tree;
+  }
+  if (structTree.error) {
+    $("tag-tree").innerHTML = "";
+    note.textContent = structTree.error;
+    note.hidden = false;
+    return;
+  }
+  if (!structTree.tagged) {
+    $("tag-tree").innerHTML =
+      '<div class="muted">No tags yet — this document has no accessibility structure.</div>';
+  } else {
+    renderTree();
+  }
+  await showStructPage(0);
+}
+
+function renderTree() {
+  const box = $("tag-tree");
+  box.innerHTML = "";
+  structSelectedRow = null;
+  const build = (nodes, container) => {
+    for (const node of nodes) {
+      const row = document.createElement("div");
+      row.className = "tnode";
+      const caret = document.createElement("span");
+      caret.className = "caret";
+      caret.textContent = node.kids.length ? "▾" : "";
+      const type = document.createElement("span");
+      type.className = "ttype";
+      type.textContent = typeText(node.type);
+      const text = document.createElement("span");
+      text.className = "ttext";
+      text.textContent =
+        node.text || (node.type === "Figure" ? node.alt || "(no description yet)" : "");
+      row.append(caret, type, text);
+      container.appendChild(row);
+      let kidsBox = null;
+      if (node.kids.length) {
+        kidsBox = document.createElement("div");
+        kidsBox.className = "tkids";
+        build(node.kids, kidsBox);
+        container.appendChild(kidsBox);
+      }
+      caret.onclick = (e) => {
+        e.stopPropagation();
+        if (!kidsBox) return;
+        kidsBox.classList.toggle("collapsed");
+        caret.textContent = kidsBox.classList.contains("collapsed") ? "▸" : "▾";
+      };
+      row.onclick = () => selectNode(node, row);
+    }
+  };
+  build(structTree.root, box);
+  if (structTree.truncated) {
+    const more = document.createElement("div");
+    more.className = "muted";
+    more.textContent = "…tree shortened (very large document)";
+    box.appendChild(more);
+  }
+}
+
+async function selectNode(node, row) {
+  if (structSelectedRow) structSelectedRow.classList.remove("selected");
+  structSelectedRow = row;
+  row.classList.add("selected");
+  if (node.page === null || node.box === null) {
+    drawBoxes([]);
+    return;
+  }
+  if (node.page !== structPage) await showStructPage(node.page);
+  drawBoxes([node.box]);
+}
+
+async function showStructPage(index) {
+  const file = selected;
+  const result = await api.pageImage(file, index);
+  if (selected !== file || !structMode) return;
+  const note = $("structure-note");
+  if (result.error) {
+    note.textContent = result.error;
+    note.hidden = false;
+    return;
+  }
+  note.hidden = true;
+  structPage = index;
+  structPageCount = result.pages;
+  $("page-img").src = result.data_uri;
+  $("page-img").dataset.width = result.width;
+  $("page-img").dataset.height = result.height;
+  $("page-label").textContent = `Page ${index + 1} of ${result.pages}`;
+  $("page-prev").disabled = index <= 0;
+  $("page-next").disabled = index >= result.pages - 1;
+  drawBoxes([]);
+}
+
+function drawBoxes(boxes) {
+  const holder = $("page-boxes");
+  holder.innerHTML = "";
+  const img = $("page-img");
+  const w = parseFloat(img.dataset.width || "0");
+  const h = parseFloat(img.dataset.height || "0");
+  if (!w || !h) return;
+  for (const [x0, y0, x1, y1] of boxes) {
+    const div = document.createElement("div");
+    div.className = "hlbox";
+    div.style.left = `${(x0 / w) * 100}%`;
+    div.style.top = `${((h - y1) / h) * 100}%`;
+    div.style.width = `${((x1 - x0) / w) * 100}%`;
+    div.style.height = `${((y1 - y0) / h) * 100}%`;
+    holder.appendChild(div);
+    div.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 }
 
@@ -305,15 +536,19 @@ async function runBatch() {
       setStatus("Processing failed: " + s.error);
     } else {
       const items = s.items || [];
-      const ok = items.filter((i) => i.ok).length;
+      const processed = items.filter((i) => i.ok && !i.skipped).length;
+      const skipped = items.filter((i) => i.skipped).length;
       const fails = items
         .filter((i) => !i.ok)
         .map((i) => `${i.file}: ${i.error}`)
         .join(" | ");
       const stopped = s.cancelled ? "Stopped early. " : "";
+      const parts = [];
+      if (processed) parts.push(`${processed} processed`);
+      if (skipped) parts.push(`${skipped} already done (skipped)`);
       setStatus(
         items.length
-          ? stopped + `${ok} of ${items.length} processed.` + (fails ? ` Problems - ${fails}` : "")
+          ? stopped + parts.join(", ") + "." + (fails ? ` Problems - ${fails}` : "")
           : stopped + (s.cancelled ? "Nothing was processed." : "No PDFs in the input folder.")
       );
     }
@@ -325,6 +560,7 @@ async function addPdfs() {
   const result = await api.addPdfs();
   if (result.copied && result.copied.length) {
     setStatus(`Added: ${result.copied.join(", ")} - now press Process PDFs.`);
+    await refresh(); // they appear in "Waiting to process" immediately
   } else if (result.error) {
     setStatus(result.error);
   }
@@ -373,14 +609,21 @@ async function init() {
   };
   $("refresh").onclick = () => refresh();
   $("add").onclick = addPdfs;
+  $("open-inbox").onclick = () => api.openInbox();
   $("open-outbox").onclick = () => api.openOutbox();
   $("open-viewer").onclick = () => selected && api.openOutput(selected);
+  $("toggle-structure").onclick = toggleStructure;
+  $("page-prev").onclick = () => structPage > 0 && showStructPage(structPage - 1);
+  $("page-next").onclick = () =>
+    structPage < structPageCount - 1 && showStructPage(structPage + 1);
   $("approve").onclick = () => decide(true);
   $("reject").onclick = () => decide(false);
   $("history").onclick = toggleHistory;
 
+  // full paths live in the folder buttons' tooltips, not the header.
   const ws = await api.workspace();
-  $("paths").textContent = `input folder: ${ws.inbox}    ·    output folder: ${ws.outbox}`;
+  $("open-inbox").title = ws.inbox;
+  $("open-outbox").title = ws.outbox;
   $("reviewer").value = await api.reviewerDefault();
   await refresh(false);
 }

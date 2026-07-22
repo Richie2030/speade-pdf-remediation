@@ -47,6 +47,27 @@ def _client(tmp_path: Path) -> TestClient:
     return TestClient(create_app(config))
 
 
+def test_structure_tree_and_page_image_endpoints(tmp_path):
+    pikepdf = pytest.importorskip("pikepdf", reason="needs --extra tag")
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    client = _client(tmp_path)
+    doc = pikepdf.Pdf.new()
+    doc.add_blank_page(page_size=(612, 792))
+    doc.save(tmp_path / "inbox" / "a.pdf")
+    client.post("/api/run_batch_start")
+    deadline = time.monotonic() + 10
+    while client.get("/api/run_batch_status").json().get("running"):
+        assert time.monotonic() < deadline, "batch never finished"
+        time.sleep(0.02)
+
+    tree = client.get("/api/structure_tree", params={"file": "a.pdf"}).json()
+    assert tree["tagged"] is False  # blank page: no tags yet, but the shape flows
+
+    image = client.get("/api/page_image", params={"file": "a.pdf", "index": 0}).json()
+    assert image["data_uri"].startswith("data:image/png;base64,")
+    assert image["pages"] == 1
+
+
 def test_serves_the_shared_ui_with_the_web_api_seam(tmp_path):
     client = _client(tmp_path)
 

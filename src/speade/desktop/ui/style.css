@@ -15,6 +15,10 @@
 }
 
 * { box-sizing: border-box; }
+/* the hidden attribute must ALWAYS win: id rules like `#structure-wrap
+   { display: flex }` otherwise override it and "hidden" panels leak out
+   (the ghost page-image bug from live testing). */
+[hidden] { display: none !important; }
 html, body { height: 100%; margin: 0; }
 body {
   display: flex; flex-direction: column;
@@ -61,6 +65,13 @@ button:disabled { opacity: .5; cursor: default; }
 main { flex: 1; display: flex; min-height: 0; }
 
 #queue { width: 340px; overflow-y: auto; border-right: 2px solid var(--line); background: #fff; }
+.qsection {
+  padding: 8px 14px 4px; font-size: 13px; font-weight: 700; letter-spacing: .3px;
+  text-transform: uppercase; color: var(--ink-muted); background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+.qitem.waiting { cursor: default; background: #fbfcfe; }
+.qitem.waiting .name { color: var(--ink-muted); }
 .qitem { padding: 12px 14px; border-bottom: 1px solid #edf1f6; cursor: pointer; }
 .qitem:hover { background: #eef4f9; }
 .qitem.selected { background: #e2ecf5; border-left: 5px solid var(--ucc-yellow); padding-left: 9px; }
@@ -92,6 +103,32 @@ main { flex: 1; display: flex; min-height: 0; }
 #preview-wrap { flex: 1; min-height: 320px; border: 2px solid var(--line); border-radius: 8px; background: #fff; position: relative; }
 #preview { width: 100%; height: 100%; min-height: 320px; border: 0; }
 #preview-note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; text-align: center; }
+
+/* ------------------------------------------------------ structure (tags) */
+#structure-wrap {
+  flex: 1; min-height: 320px; display: flex; gap: 12px;
+  border: 2px solid var(--line); border-radius: 8px; background: #fff; padding: 10px;
+}
+#tag-tree { width: 340px; overflow-y: auto; border-right: 1px solid var(--line); padding-right: 8px; }
+.tnode { display: flex; align-items: baseline; gap: 6px; padding: 3px 4px; border-radius: 6px; cursor: pointer; }
+.tnode:hover { background: #eef4f9; }
+.tnode.selected { background: #fff0cd; outline: 2px solid var(--ucc-yellow); }
+.tnode .ttype { font-weight: 700; color: var(--ucc-navy); white-space: nowrap; font-size: 14px; }
+.tnode .ttext { color: var(--ink-muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tnode .caret { width: 14px; text-align: center; color: var(--ink-muted); flex: none; }
+.tkids { margin-left: 16px; }
+.tkids.collapsed { display: none; }
+#page-side { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.page-nav { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.page-nav button { min-height: 36px; padding: 4px 12px; font-size: 14px; }
+#page-label { font-size: 14px; color: var(--ink-muted); }
+#page-view { position: relative; overflow-y: auto; flex: 1; background: var(--bg); border-radius: 6px; }
+#page-img { width: 100%; height: auto; display: block; }
+.hlbox {
+  position: absolute; border: 3px solid var(--ucc-yellow);
+  background: rgba(255, 184, 28, 0.18); border-radius: 2px; pointer-events: none;
+}
+#structure-note { padding: 8px 2px; }
 
 /* --------------------------------------------------------------- gate */
 .gate {

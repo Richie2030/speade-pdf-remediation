@@ -143,6 +143,7 @@ def test_success_reroutes_to_born_digital(monkeypatch, tmp_path):
 
     assert result.changed is True
     assert result.sidecar.route == Route.BORN_DIGITAL  # the detect->ocr->tag handoff
+    assert result.sidecar.ocr_layered is True  # tag treats page scans as background
     assert result.output == tmp_path / "scan.ocr.pdf"  # new file, not in-place
     assert result.output.exists()
     assert calls == [(pdf, result.output)]

@@ -97,6 +97,49 @@ class SpeadeApi:
         except Exception as exc:  # unreadable file / missing pikepdf: a note, not a crash
             return {"error": f"structure unavailable: {str(exc)[:120]}"}
 
+    def structure_tree(self, file: str) -> dict:
+        """The full tag tree with page geometry -- the in-app tags panel."""
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
+        try:
+            return service.structure_tree(pdf).model_dump(mode="json")
+        except Exception as exc:  # unreadable file / missing engine: a note, not a crash
+            return {"error": f"structure unavailable: {str(exc)[:120]}"}
+
+    def page_image(self, file: str, index: int = 0) -> dict:
+        """One page rendered as a PNG data: URI (plus its size in PDF points),
+        the canvas the tags panel draws its highlight boxes over."""
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
+        try:
+            import io
+
+            import pypdfium2 as pdfium
+
+            doc = pdfium.PdfDocument(str(pdf))
+            try:
+                if not 0 <= index < len(doc):
+                    return {"error": f"no page {index + 1}"}
+                page = doc[index]
+                width, height = page.get_size()
+                scale = min(1400 / max(width, 1), 2.0)  # ~1400px wide: crisp, not huge
+                image = page.render(scale=scale).to_pil()
+                buf = io.BytesIO()
+                image.save(buf, format="PNG")
+                encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+                return {
+                    "data_uri": f"data:image/png;base64,{encoded}",
+                    "width": width,
+                    "height": height,
+                    "pages": len(doc),
+                }
+            finally:
+                doc.close()
+        except Exception as exc:
+            return {"error": f"page image unavailable: {str(exc)[:120]}"}
+
     def audit_log(self, limit: int = 200) -> list[dict]:
         """The audit trail, newest first -- the History view."""
         return service.audit_events(self._config_path, limit=limit)
@@ -108,10 +151,16 @@ class SpeadeApi:
         + run_batch_status for its progress bar instead."""
         return [item.model_dump(mode="json") for item in service.run_batch(None, self._config_path)]
 
-    def run_batch_start(self) -> dict:
+    def list_pending(self) -> list[str]:
+        """Inbox files still waiting to be processed -- the sidebar's 'Waiting
+        to process' section (already-done documents are not listed again)."""
+        return service.list_pending(self._config_path)
+
+    def run_batch_start(self, reprocess: bool = False) -> dict:
         """Kick off a batch on a worker thread; the UI polls run_batch_status.
         pywebview runs each bridge call on its own thread, so status polls keep
-        flowing while the worker grinds through the inbox."""
+        flowing while the worker grinds through the inbox. Already-processed,
+        unchanged files are skipped unless `reprocess` is set."""
         with self._batch_lock:
             if self._batch.get("running"):
                 return {"error": "a batch is already running"}
@@ -127,6 +176,7 @@ class SpeadeApi:
                     self._config_path,
                     progress=progress,
                     cancel=lambda: bool(self._batch.get("cancel")),
+                    reprocess=reprocess,
                 )
                 self._batch["items"] = [item.model_dump(mode="json") for item in items]
                 self._batch["cancelled"] = bool(self._batch.get("cancel"))
@@ -215,6 +265,14 @@ class SpeadeApi:
         if pdf is None:
             return False
         _open_native(pdf)
+        return True
+
+    def open_inbox(self) -> bool:
+        """Open the input folder in the file explorer (drop PDFs in directly)."""
+        inbox = service.workspace(self._config_path).inbox
+        if not inbox.is_dir():
+            return False
+        _open_native(inbox)
         return True
 
     def open_outbox(self) -> bool:

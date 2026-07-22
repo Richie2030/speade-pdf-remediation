@@ -76,6 +76,9 @@ class Sidecar(BaseModel):
     # routing + what has run
     route: Route = Route.UNKNOWN  # set by detect: BORN_DIGITAL / SCANNED / UNKNOWN
     already_tagged: bool = False  # detect found an existing structure tree -> don't re-tag
+    # set by ocr on success: every page is OUR image+invisible-text build, so the
+    # tag stage may treat the page images as background (no Figure per scan page)
+    ocr_layered: bool = False
 
     # running list of which stages have run, e.g. ["detect", "tag"] -- a trail of work done
     stages_applied: list[str] = Field(default_factory=list)

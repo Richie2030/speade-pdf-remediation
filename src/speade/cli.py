@@ -86,7 +86,9 @@ def run_batch(
         return
 
     for item in items:
-        if item.ok and item.sidecar is not None:
+        if item.skipped:
+            typer.echo(f"  skip  {item.file} (already processed, unchanged)")
+        elif item.ok and item.sidecar is not None:
             flags = f"  [{', '.join(item.sidecar.flags)}]" if item.sidecar.flags else ""
             vera = {True: "  veraPDF: pass", False: "  veraPDF: FAIL"}.get(
                 item.sidecar.verapdf_passed, ""

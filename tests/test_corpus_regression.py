@@ -189,6 +189,14 @@ def test_scanned_doc_ocr_then_tag_full_chain(tmp_path):
     text = "".join((page.extract_text() or "") for page in reader.pages)
     assert len(text.strip()) > 100  # the text layer is real, not vestigial
 
+    # the Figure-box fix: page scans are background artifacts, never content --
+    # a screen reader must not hear "figure" announced on every scanned page.
+    from speade.validation.structure import summarize
+
+    summary = summarize(out)
+    assert summary.tagged is True
+    assert summary.figures == 0
+
 
 @pytest.mark.skipif(not os.environ.get("SPEADE_SLOW"), reason="150pp engine run; SPEADE_SLOW=1")
 def test_long_document_tags_end_to_end(tmp_path):
