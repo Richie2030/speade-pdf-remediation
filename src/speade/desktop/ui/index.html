@@ -44,32 +44,15 @@
       <div id="detail-body" hidden>
         <div class="detail-head">
           <h2 id="doc-name"></h2>
-          <div>
-            <button id="toggle-structure">Show tags</button>
-            <button id="open-viewer">Open in PDF viewer</button>
-          </div>
         </div>
 
         <dl id="facts"></dl>
         <div id="doc-flags"></div>
 
-        <div id="preview-wrap">
-          <embed id="preview" type="application/pdf" title="Document preview">
-          <div id="preview-note" class="muted" hidden></div>
-        </div>
-
-        <div id="structure-wrap" hidden>
+        <div id="structure-wrap">
           <div id="tag-tree" aria-label="Tag structure — click a tag to see it on the page"></div>
           <div id="page-side">
-            <div class="page-nav">
-              <button id="page-prev">&larr; Page</button>
-              <span id="page-label"></span>
-              <button id="page-next">Page &rarr;</button>
-            </div>
-            <div id="page-view">
-              <img id="page-img" alt="Page image">
-              <div id="page-boxes"></div>
-            </div>
+            <div id="page-stack"></div>
             <div id="structure-note" class="muted" hidden></div>
           </div>
         </div>

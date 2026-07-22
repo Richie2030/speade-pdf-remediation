@@ -5,14 +5,12 @@ const $ = (id) => document.getElementById(id);
 let queue = [];
 let pending = []; // inbox files still waiting to be processed
 let selected = null;
-let previewUrl = null; // blob: URL of the current preview, revoked on change
 
-// -------- structure (tags) panel state, reset whenever the selection changes
-let structMode = false; // showing the tags panel instead of the preview?
+// -------- tags view state, rebuilt whenever the selection changes. The tags
+// view IS the document view: tree + continuous page stack with all boxes drawn.
 let structTree = null; // the fetched tree for `selected`
-let structPage = 0; // 0-based page currently shown
-let structPageCount = 0;
 let structSelectedRow = null; // the highlighted .tnode element
+let pageObserver = null; // lazy-loads page images as bands scroll into view
 
 // ------------------------------------------------- plain-language dictionaries
 const STATUS_TEXT = {
@@ -120,8 +118,6 @@ async function refresh(keepSelection = true) {
 function select(file) {
   selected = file;
   $("history-pane").hidden = true;
-  exitStructureMode(); // a new document starts back at the preview
-  structTree = null;
   renderQueue();
   renderDetail();
 }
@@ -251,25 +247,8 @@ async function renderDetail() {
     setLangFields(m.lang || "");
   });
 
-  // embedded preview via a blob: URL -- WebView2 refuses large data: URIs in
-  // <embed>, but object URLs stream fine.
-  const preview = $("preview");
-  const note = $("preview-note");
-  preview.removeAttribute("src");
-  note.hidden = true;
-  if (previewUrl) {
-    URL.revokeObjectURL(previewUrl);
-    previewUrl = null;
-  }
-  const loaded = await api.loadPdf(item.file);
-  if (loaded.data_uri && selected === item.file) {
-    const bytes = Uint8Array.from(atob(loaded.data_uri.split(",")[1]), (c) => c.charCodeAt(0));
-    previewUrl = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
-    preview.src = previewUrl;
-  } else if (!loaded.data_uri) {
-    note.textContent = loaded.error || "Preview unavailable - use Open in PDF viewer.";
-    note.hidden = false;
-  }
+  // the tags view IS the document view: tree + pages with all boxes drawn.
+  loadStructure(item.file);
 }
 
 // ---------------------------------------------------- structure (tags) panel
@@ -291,44 +270,102 @@ function typeText(t) {
   return TYPE_TEXT[t] || t;
 }
 
-function exitStructureMode() {
-  structMode = false;
-  $("structure-wrap").hidden = true;
-  $("preview-wrap").hidden = false;
-  $("toggle-structure").textContent = "Show tags";
-}
-
-async function toggleStructure() {
-  if (structMode) {
-    exitStructureMode();
-    return;
+async function loadStructure(file) {
+  structTree = null;
+  structSelectedRow = null;
+  if (pageObserver) {
+    pageObserver.disconnect();
+    pageObserver = null;
   }
-  structMode = true;
-  $("preview-wrap").hidden = true;
-  $("structure-wrap").hidden = false;
-  $("toggle-structure").textContent = "Show preview";
-  const note = $("structure-note");
-  note.hidden = true;
-  if (!structTree) {
-    const file = selected;
-    $("tag-tree").innerHTML = '<div class="muted">Reading the tag structure…</div>';
-    const tree = await api.structureTree(file);
-    if (!structMode || selected !== file) return; // user moved on while we fetched
-    structTree = tree;
-  }
-  if (structTree.error) {
+  $("tag-tree").innerHTML = '<div class="muted">Reading the tag structure…</div>';
+  $("page-stack").innerHTML = "";
+  $("structure-note").hidden = true;
+  const tree = await api.structureTree(file);
+  if (selected !== file) return; // user moved on while we fetched
+  structTree = tree;
+  if (tree.error) {
     $("tag-tree").innerHTML = "";
-    note.textContent = structTree.error;
+    const note = $("structure-note");
+    note.textContent = tree.error + " — this document cannot be displayed here.";
     note.hidden = false;
     return;
   }
-  if (!structTree.tagged) {
+  if (!tree.tagged) {
     $("tag-tree").innerHTML =
       '<div class="muted">No tags yet — this document has no accessibility structure.</div>';
   } else {
     renderTree();
   }
-  await showStructPage(0);
+  renderPageStack(file);
+}
+
+// every leaf tag's box, grouped by page -- drawn permanently, Acrobat-style.
+function collectLeafBoxes(nodes, out) {
+  for (const node of nodes) {
+    if (node.kids.length) collectLeafBoxes(node.kids, out);
+    else if (node.box && node.page !== null) (out[node.page] ||= []).push(node);
+  }
+}
+
+function boxStyle(el, box, size) {
+  const [x0, y0, x1, y1] = box;
+  el.style.left = `${(x0 / size.width) * 100}%`;
+  el.style.top = `${((size.height - y1) / size.height) * 100}%`;
+  el.style.width = `${((x1 - x0) / size.width) * 100}%`;
+  el.style.height = `${((y1 - y0) / size.height) * 100}%`;
+}
+
+function nodeBox(node, size) {
+  const div = document.createElement("div");
+  div.className = "hlbox";
+  boxStyle(div, node.box, size);
+  div.title = typeText(node.type) + (node.text ? ` — ${node.text}` : "");
+  div.onclick = () => selectNode(node, { scrollTree: true });
+  return div;
+}
+
+function renderPageStack(file) {
+  const stack = $("page-stack");
+  stack.innerHTML = "";
+  const boxesByPage = [];
+  if (structTree.tagged) collectLeafBoxes(structTree.root, boxesByPage);
+  const bands = [];
+  structTree.pages.forEach((size, i) => {
+    const band = document.createElement("div");
+    band.className = "pageband";
+    band.style.aspectRatio = `${size.width} / ${size.height}`;
+    band.dataset.page = i;
+    const num = document.createElement("span");
+    num.className = "pagenum";
+    num.textContent = `Page ${i + 1}`;
+    band.appendChild(num);
+    for (const node of boxesByPage[i] || []) {
+      band.appendChild(nodeBox(node, size));
+    }
+    stack.appendChild(band);
+    bands.push(band);
+  });
+  // pages render lazily as they scroll into view -- a 100-page scan must not
+  // fetch 100 images up front. Sizes are known, so layout never jumps.
+  pageObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const band = entry.target;
+        pageObserver.unobserve(band);
+        const index = parseInt(band.dataset.page, 10);
+        api.pageImage(file, index).then((result) => {
+          if (selected !== file || result.error || band.querySelector("img")) return;
+          const img = document.createElement("img");
+          img.alt = `Page ${index + 1}`;
+          img.src = result.data_uri;
+          band.prepend(img);
+        });
+      }
+    },
+    { root: $("page-side"), rootMargin: "600px" }
+  );
+  bands.forEach((b) => pageObserver.observe(b));
 }
 
 function renderTree() {
@@ -364,7 +401,8 @@ function renderTree() {
         kidsBox.classList.toggle("collapsed");
         caret.textContent = kidsBox.classList.contains("collapsed") ? "▸" : "▾";
       };
-      row.onclick = () => selectNode(node, row);
+      node.__row = row; // page-box clicks find their way back to this row
+      row.onclick = () => selectNode(node);
     }
   };
   build(structTree.root, box);
@@ -376,57 +414,26 @@ function renderTree() {
   }
 }
 
-async function selectNode(node, row) {
+function selectNode(node, opts = {}) {
   if (structSelectedRow) structSelectedRow.classList.remove("selected");
-  structSelectedRow = row;
-  row.classList.add("selected");
-  if (node.page === null || node.box === null) {
-    drawBoxes([]);
-    return;
+  structSelectedRow = node.__row || null;
+  if (structSelectedRow) {
+    structSelectedRow.classList.add("selected");
+    if (opts.scrollTree) {
+      structSelectedRow.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
   }
-  if (node.page !== structPage) await showStructPage(node.page);
-  drawBoxes([node.box]);
-}
-
-async function showStructPage(index) {
-  const file = selected;
-  const result = await api.pageImage(file, index);
-  if (selected !== file || !structMode) return;
-  const note = $("structure-note");
-  if (result.error) {
-    note.textContent = result.error;
-    note.hidden = false;
-    return;
-  }
-  note.hidden = true;
-  structPage = index;
-  structPageCount = result.pages;
-  $("page-img").src = result.data_uri;
-  $("page-img").dataset.width = result.width;
-  $("page-img").dataset.height = result.height;
-  $("page-label").textContent = `Page ${index + 1} of ${result.pages}`;
-  $("page-prev").disabled = index <= 0;
-  $("page-next").disabled = index >= result.pages - 1;
-  drawBoxes([]);
-}
-
-function drawBoxes(boxes) {
-  const holder = $("page-boxes");
-  holder.innerHTML = "";
-  const img = $("page-img");
-  const w = parseFloat(img.dataset.width || "0");
-  const h = parseFloat(img.dataset.height || "0");
-  if (!w || !h) return;
-  for (const [x0, y0, x1, y1] of boxes) {
-    const div = document.createElement("div");
-    div.className = "hlbox";
-    div.style.left = `${(x0 / w) * 100}%`;
-    div.style.top = `${((h - y1) / h) * 100}%`;
-    div.style.width = `${((x1 - x0) / w) * 100}%`;
-    div.style.height = `${((y1 - y0) / h) * 100}%`;
-    holder.appendChild(div);
-    div.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }
+  document.querySelectorAll(".hlbox.selected").forEach((el) => el.remove());
+  if (node.box == null || node.page === null || !structTree) return;
+  const band = $("page-stack").querySelector(`.pageband[data-page="${node.page}"]`);
+  if (!band) return;
+  const emphasis = document.createElement("div");
+  emphasis.className = "hlbox selected";
+  boxStyle(emphasis, node.box, structTree.pages[node.page]);
+  band.appendChild(emphasis);
+  // tree click -> bring the page location into view; box click -> stay put
+  // (the user is already looking at it) and reveal the tree row instead.
+  if (!opts.scrollTree) emphasis.scrollIntoView({ block: "center", behavior: "smooth" });
 }
 
 // The language dropdown covers the common cases; a code it does not know goes
@@ -472,8 +479,10 @@ async function decide(approve) {
     const verdict = result.verapdf_passed
       ? "automatic check passed"
       : "automatic check found issues (" + (result.failed_clauses.join(", ") || "unlisted") + ")";
-    $("gate-result").textContent =
-      `Recorded: ${STATUS_TEXT[result.status] || result.status} by ${result.reviewer} - ${verdict}.`;
+    const where = approve
+      ? "Approved — moved to the approved folder, ready to share."
+      : "Rejected — moved to the rejected folder. Fix it in Adobe Acrobat, then come back here and approve it.";
+    $("gate-result").textContent = `${where} Recorded by ${result.reviewer}; ${verdict}.`;
     await refresh();
   } catch (err) {
     $("gate-result").textContent = "Error: " + err;
@@ -611,11 +620,6 @@ async function init() {
   $("add").onclick = addPdfs;
   $("open-inbox").onclick = () => api.openInbox();
   $("open-outbox").onclick = () => api.openOutbox();
-  $("open-viewer").onclick = () => selected && api.openOutput(selected);
-  $("toggle-structure").onclick = toggleStructure;
-  $("page-prev").onclick = () => structPage > 0 && showStructPage(structPage - 1);
-  $("page-next").onclick = () =>
-    structPage < structPageCount - 1 && showStructPage(structPage + 1);
   $("approve").onclick = () => decide(true);
   $("reject").onclick = () => decide(false);
   $("history").onclick = toggleHistory;

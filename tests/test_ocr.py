@@ -88,6 +88,49 @@ def test_quantize_sizes_snaps_body_jitter_but_keeps_headings():
     assert [ln.size for ln in lines] == [40.75, 40.75, 40.75, 80.0]
 
 
+def test_quantize_denies_heading_privilege_to_noisy_or_runaway_lines():
+    # live-testing finding: poor scans inflate x_size on mid-paragraph lines,
+    # which then became fake Heading tags. A large line only KEEPS its size when
+    # it is confidently recognised and not a whole sentence.
+    def line(size: float, conf: float = 100.0, text: str = "A Real Heading") -> OcrLine:
+        return OcrLine(text=text, x0=0, y0=0, x1=100, y1=30, size=size, baseline_dy=0, conf=conf)
+
+    body = [line(40.0) for _ in range(5)]  # enough body to anchor the median at 40
+    noisy_big = line(80.0, conf=50.0)  # low confidence: demoted
+    runaway_big = line(80.0, text="w " * 25)  # 25 words: a sentence, demoted
+    real_heading = line(80.0)  # confident + short: stays a heading
+
+    quantize_sizes([*body, noisy_big, runaway_big, real_heading])
+
+    assert noisy_big.size == 40.0
+    assert runaway_big.size == 40.0
+    assert real_heading.size == 80.0
+
+
+def test_parse_hocr_drops_noise_words_and_junk_lines():
+    # confidence filtering: near-certain-noise words vanish, and a line whose
+    # surviving words still average low (a stain read as text) vanishes whole.
+    hocr = """
+    <span class='ocr_line' title="bbox 10 10 500 40; x_size 30">
+      <span class='ocrx_word' title='bbox 10 10 100 40; x_wconf 95'>Real</span>
+      <span class='ocrx_word' title='bbox 110 10 200 40; x_wconf 8'>zn|.</span>
+      <span class='ocrx_word' title='bbox 210 10 300 40; x_wconf 93'>text</span>
+    </span>
+    <span class='ocr_line' title="bbox 10 60 500 90; x_size 30">
+      <span class='ocrx_word' title='bbox 10 60 100 90; x_wconf 21'>ae</span>
+      <span class='ocrx_word' title='bbox 110 60 200 90; x_wconf 30'>ee</span>
+    </span>
+    <span class='ocr_line' title="bbox 10 110 500 140; x_size 30">
+      <span class='ocrx_word' title='bbox 10 110 100 140; x_wconf 96'>;.,</span>
+    </span>
+    """
+
+    lines = parse_hocr(hocr)
+
+    assert [line.text for line in lines] == ["Real text"]  # noise word gone
+    assert lines[0].conf == pytest.approx(94.0)  # mean of the SURVIVING words
+
+
 def test_text_width_uses_real_helvetica_metrics():
     # live-testing finding: an averaged char width leaves the stretched line
     # SHORT of its printed right edge, so the last words go untagged. Real AFM

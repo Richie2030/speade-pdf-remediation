@@ -100,11 +100,9 @@ main { flex: 1; display: flex; min-height: 0; }
 #facts dd { margin: 0; font-size: 15px; }
 #doc-flags { margin-bottom: 10px; }
 
-#preview-wrap { flex: 1; min-height: 320px; border: 2px solid var(--line); border-radius: 8px; background: #fff; position: relative; }
-#preview { width: 100%; height: 100%; min-height: 320px; border: 0; }
-#preview-note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; text-align: center; }
-
 /* ------------------------------------------------------ structure (tags) */
+/* THE document view: the tag tree beside a continuous top-to-bottom page
+   stack with every tag's box drawn (Acrobat-style), selected tag emphasised. */
 #structure-wrap {
   flex: 1; min-height: 320px; display: flex; gap: 12px;
   border: 2px solid var(--line); border-radius: 8px; background: #fff; padding: 10px;
@@ -118,15 +116,24 @@ main { flex: 1; display: flex; min-height: 0; }
 .tnode .caret { width: 14px; text-align: center; color: var(--ink-muted); flex: none; }
 .tkids { margin-left: 16px; }
 .tkids.collapsed { display: none; }
-#page-side { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.page-nav { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.page-nav button { min-height: 36px; padding: 4px 12px; font-size: 14px; }
-#page-label { font-size: 14px; color: var(--ink-muted); }
-#page-view { position: relative; overflow-y: auto; flex: 1; background: var(--bg); border-radius: 6px; }
-#page-img { width: 100%; height: auto; display: block; }
+#page-side { flex: 1; min-width: 0; overflow-y: auto; background: var(--bg); border-radius: 6px; padding: 10px; }
+.pageband {
+  position: relative; width: 100%; margin: 0 auto 14px; background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .15);
+}
+.pageband img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.pagenum {
+  position: absolute; top: 4px; left: 4px; z-index: 2; font-size: 12px;
+  background: var(--ucc-navy); color: #fff; padding: 1px 8px; border-radius: 8px; opacity: .75;
+}
 .hlbox {
-  position: absolute; border: 3px solid var(--ucc-yellow);
-  background: rgba(255, 184, 28, 0.18); border-radius: 2px; pointer-events: none;
+  position: absolute; border: 1.5px solid rgba(0, 60, 100, .45);
+  background: rgba(0, 60, 100, .05); border-radius: 2px; cursor: pointer; z-index: 1;
+}
+.hlbox:hover { border-color: rgba(0, 60, 100, .8); }
+.hlbox.selected {
+  border: 3px solid var(--ucc-yellow); background: rgba(255, 184, 28, .18);
+  pointer-events: none; z-index: 3;
 }
 #structure-note { padding: 8px 2px; }
 

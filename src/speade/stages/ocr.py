@@ -59,6 +59,20 @@ _SCALE = 72.0 / _DPI  # hOCR pixel coordinates -> PDF points
 # a line >= this multiple of the page's median size is a real heading and keeps
 # its measured size; everything below is snapped to the median (see _quantize).
 _HEADING_RATIO = 1.25
+# ...but only when the line also LOOKS like a heading: confidently recognised
+# and not a full sentence (noisy scans otherwise promote mid-paragraph lines
+# with inflated x_size to fake Heading tags -- live-testing finding).
+_HEADING_MIN_CONF = 65
+_HEADING_MAX_WORDS = 20  # textbook instruction headings run long; 20 words still
+#                        # excludes runaway body lines promoted by size noise
+
+# Tesseract reports a 0-100 confidence per word (hOCR x_wconf). Measured on the
+# corpus scans: pure noise (stains, ruled lines read as "ae ee ee") sits below
+# 20, real-but-faint words go as low as ~38. So: drop only near-certain-noise
+# WORDS, then drop LINES whose surviving words still average below 40 -- the
+# fragments that were polluting the tag tree as junk paragraphs.
+_WORD_MIN_CONF = 20
+_LINE_MIN_CONF = 40
 
 # Standard Helvetica advance widths (AFM, per mille of the font size). The
 # invisible layer is stretched so each line's text spans EXACTLY the printed
@@ -158,6 +172,7 @@ _BBOX_RE = re.compile(r"bbox (\d+) (\d+) (\d+) (\d+)")
 _XSIZE_RE = re.compile(r"x_size ([\d.]+)")
 _BASELINE_RE = re.compile(r"baseline ([-\d.]+) ([-\d.]+)")
 _ANGLE_RE = re.compile(r"textangle ([-\d.]+)")
+_WCONF_RE = re.compile(r"x_wconf (\d+)")
 
 
 def find_tesseract() -> str | None:
@@ -176,6 +191,7 @@ class OcrLine:
     y1: int
     size: float  # font size in page pixels (hOCR x_size)
     baseline_dy: float  # baseline offset from the box bottom (usually negative)
+    conf: float = 100.0  # mean Tesseract confidence of the surviving words
 
 
 def parse_hocr(hocr: str) -> list[OcrLine]:
@@ -208,6 +224,7 @@ def parse_hocr(hocr: str) -> list[OcrLine]:
                 base = _BASELINE_RE.search(title)
                 self.line = {
                     "parts": [],
+                    "confs": [],
                     "x0": x0,
                     "y0": y0,
                     "x1": x1,
@@ -221,6 +238,8 @@ def parse_hocr(hocr: str) -> list[OcrLine]:
                 if cls == "ocrx_word":
                     self.in_word = True
                     self.line["parts"].append("")
+                    conf = _WCONF_RE.search(title)
+                    self.line["confs"].append(int(conf.group(1)) if conf else 100)
 
         def handle_endtag(self, tag: str) -> None:
             if tag != "span" or self.line is None:
@@ -228,9 +247,16 @@ def parse_hocr(hocr: str) -> list[OcrLine]:
             if self.depth > 0:
                 self.depth -= 1
                 self.in_word = False
-            else:  # the line span itself closed
-                text = " ".join(p.strip() for p in self.line["parts"] if p.strip())
-                if text:
+            else:  # the line span itself closed: filter noise, then keep it
+                words = [
+                    (p.strip(), c)
+                    for p, c in zip(self.line["parts"], self.line["confs"], strict=False)
+                    if p.strip() and c >= _WORD_MIN_CONF
+                ]
+                text = " ".join(w for w, _ in words)
+                conf = statistics.mean(c for _, c in words) if words else 0.0
+                keep = bool(text) and conf >= _LINE_MIN_CONF and any(ch.isalnum() for ch in text)
+                if keep:
                     parts = self.line
                     lines.append(
                         OcrLine(
@@ -241,6 +267,7 @@ def parse_hocr(hocr: str) -> list[OcrLine]:
                             y1=parts["y1"],
                             size=parts["size"],
                             baseline_dy=parts["baseline_dy"],
+                            conf=conf,
                         )
                     )
                 self.line = None
@@ -257,12 +284,19 @@ def quantize_sizes(lines: list[OcrLine]) -> list[OcrLine]:
     """Snap body-line font sizes to the page median. OCR x_size jitters line to
     line; the tagging engine reads that as 'different styles' and refuses to
     merge lines into paragraphs (and promotes slightly-larger lines to fake
-    headings). Genuinely larger lines -- real headings -- keep their size."""
+    headings). Genuinely larger lines -- real headings -- keep their size, but
+    ONLY when they also look like headings: confidently recognised and not a
+    full sentence (noisy scans inflate x_size on mid-paragraph lines)."""
     if not lines:
         return lines
     median = statistics.median(line.size for line in lines)
     for line in lines:
-        if line.size < _HEADING_RATIO * median:
+        looks_like_heading = (
+            line.size >= _HEADING_RATIO * median
+            and line.conf >= _HEADING_MIN_CONF
+            and len(line.text.split()) <= _HEADING_MAX_WORDS
+        )
+        if not looks_like_heading:
             line.size = median
     return lines
 
