@@ -82,7 +82,7 @@ class SpeadeApi:
         data = pdf.read_bytes()
         if len(data) > _MAX_EMBED_BYTES:
             size_mb = len(data) // (1024 * 1024)
-            return {"error": f"too large to embed ({size_mb} MB) — use Open in viewer"}
+            return {"error": f"too large to embed ({size_mb} MB) - use Open in viewer"}
         encoded = base64.b64encode(data).decode("ascii")
         return {"data_uri": f"data:application/pdf;base64,{encoded}"}
 

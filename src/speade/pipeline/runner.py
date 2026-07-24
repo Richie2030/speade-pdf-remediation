@@ -34,11 +34,22 @@ def run(
     the output in the outbox) as `<pdf name>.sidecar.json`."""
 
     # 1. NEVER MUTATE THE ORIGINAL: copy it into the outbox, work on the copy.
+    # The copy lands under a temp name and is renamed into place, so the
+    # visible outbox file is never half-written -- a reviewer clicking the
+    # document mid-batch must always find a readable PDF (or none), never a
+    # truncated one ("PDFium: Data format error" from live testing).
     outbox.mkdir(parents=True, exist_ok=True)
     side_dir = sidecar_dir if sidecar_dir is not None else outbox
     side_dir.mkdir(parents=True, exist_ok=True)
     working = outbox / src.name
-    shutil.copy2(src, working)
+    partial = outbox / (src.name + ".copying")
+    try:
+        shutil.copy2(src, partial)
+        partial.replace(working)
+    except BaseException:
+        with suppress(OSError):
+            partial.unlink(missing_ok=True)
+        raise
 
     # 2. seed the sidecar with the source hash (the trust trail).
     sidecar = Sidecar(

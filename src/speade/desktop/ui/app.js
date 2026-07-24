@@ -76,7 +76,7 @@ function renderQueue() {
       div.className = "qitem waiting";
       div.innerHTML =
         `<div class="name">${name}</div>` +
-        `<div class="sub">${chip("added — press Process", "draft")}</div>`;
+        `<div class="sub">${chip("added, press Process", "draft")}</div>`;
       box.appendChild(div);
     }
     const head2 = document.createElement("div");
@@ -127,22 +127,22 @@ function select(file) {
 // when they skipped themselves (a digital PDF "ran" OCR as a pass-through).
 function processedText(item) {
   if (item.flags.some((f) => f.startsWith("unreadable-"))) {
-    return "Could not be processed — the file is unreadable";
+    return "Could not be processed, the file is unreadable";
   }
   if (item.flags.includes("tag-skipped-already-tagged")) {
-    return "Already had accessibility tags — left as it was";
+    return "Already had accessibility tags, left as it was";
   }
   if (item.flags.includes("tag-skipped-needs-ocr")) {
-    return "Scanned document — NOT tagged (text recognition did not run)";
+    return "Scanned document, NOT tagged (text recognition did not run)";
   }
   const tagged = item.stages_applied.includes("tag");
   if (item.ocr_layered) {
-    return "Scanned document — text recognised (OCR) and tagged";
+    return "Scanned document, text recognised (OCR) and tagged";
   }
   if (tagged && item.route === "unknown") {
-    return "Mixed content — tagged (check every part got covered)";
+    return "Mixed content, tagged (check every part got covered)";
   }
-  if (tagged) return "Digital document — tagged";
+  if (tagged) return "Digital document, tagged";
   if (item.stages_applied.includes("noop")) return "Copied (no processing configured)";
   return item.stages_applied.join(", ") || "(nothing)";
 }
@@ -196,7 +196,7 @@ async function renderDetail() {
   const clauses = item.verapdf_failed_clauses || [];
   const issueText = clauses.length
     ? `${clauses.length} issue${clauses.length === 1 ? "" : "s"}: ` +
-      `${veraIssuesText(clauses)} — fix in Acrobat, or use your judgement` +
+      `${veraIssuesText(clauses)} - fix in Acrobat, or use your judgement` +
       ` <span class="muted">(${clauses.join(", ")})</span>`
     : "found issues";
   $("facts").innerHTML =
@@ -214,7 +214,7 @@ async function renderDetail() {
         ? "Edited since processing (Acrobat fixes are fine), it is checked again when you decide"
         : item.output_changed === false
           ? "Unchanged since the app processed it"
-          : "—"
+          : "-"
     }</dd>` +
     `<dt>Status</dt><dd>${STATUS_TEXT[item.status] || item.status}${
       item.reviewer ? " by " + item.reviewer : ""
@@ -270,7 +270,7 @@ function typeText(t) {
   return TYPE_TEXT[t] || t;
 }
 
-async function loadStructure(file) {
+async function loadStructure(file, retrying = false) {
   structTree = null;
   structSelectedRow = null;
   if (pageObserver) {
@@ -286,13 +286,34 @@ async function loadStructure(file) {
   if (tree.error) {
     $("tag-tree").innerHTML = "";
     const note = $("structure-note");
-    note.textContent = tree.error + " — this document cannot be displayed here.";
     note.hidden = false;
+    const item = queue.find((q) => q.file === file);
+    const unreadable = item && item.flags.some((f) => f.startsWith("unreadable-"));
+    if (unreadable) {
+      note.textContent =
+        "This document is password-protected or damaged, so it cannot be opened, " +
+        "processed, or displayed. Reject it and ask for a usable copy of the file.";
+      return;
+    }
+    // a readable document that fails to open is usually mid-(re)write by a
+    // running batch; say so -- and retry once for any other transient state.
+    const status = await api.runBatchStatus().catch(() => ({}));
+    if (status.running) {
+      note.textContent =
+        "This document is being processed right now - it will appear when processing finishes.";
+      return;
+    }
+    if (!retrying) {
+      note.textContent = "Could not open the document - retrying…";
+      setTimeout(() => selected === file && loadStructure(file, true), 1500);
+      return;
+    }
+    note.textContent = tree.error + " - this document cannot be displayed here.";
     return;
   }
   if (!tree.tagged) {
     $("tag-tree").innerHTML =
-      '<div class="muted">No tags yet — this document has no accessibility structure.</div>';
+      '<div class="muted">No tags yet - this document has no accessibility structure.</div>';
   } else {
     renderTree();
   }
@@ -319,7 +340,7 @@ function nodeBox(node, size) {
   const div = document.createElement("div");
   div.className = "hlbox";
   boxStyle(div, node.box, size);
-  div.title = typeText(node.type) + (node.text ? ` — ${node.text}` : "");
+  div.title = typeText(node.type) + (node.text ? ` - ${node.text}` : "");
   div.onclick = () => selectNode(node, { scrollTree: true });
   return div;
 }
@@ -480,8 +501,8 @@ async function decide(approve) {
       ? "automatic check passed"
       : "automatic check found issues (" + (result.failed_clauses.join(", ") || "unlisted") + ")";
     const where = approve
-      ? "Approved — moved to the approved folder, ready to share."
-      : "Rejected — moved to the rejected folder. Fix it in Adobe Acrobat, then come back here and approve it.";
+      ? "Approved - moved to the approved folder, ready to upload."
+      : "Rejected - moved to the rejected folder. Fix it in Adobe Acrobat, then come back here and approve it.";
     $("gate-result").textContent = `${where} Recorded by ${result.reviewer}; ${verdict}.`;
     await refresh();
   } catch (err) {

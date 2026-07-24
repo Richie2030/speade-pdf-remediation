@@ -66,6 +66,27 @@ _HEADING_MIN_CONF = 65
 _HEADING_MAX_WORDS = 20  # textbook instruction headings run long; 20 words still
 #                        # excludes runaway body lines promoted by size noise
 
+# Typewriter-era headings ("CAPITAL GAINS TAX") are body-SIZED -- only bold,
+# underline, and ALL CAPS mark them, and OCR reports none of that reliably
+# except the capitals in the text itself. A short, confident, all-caps line is
+# therefore promoted to this multiple of the body size so the tagging engine
+# gives it a Heading tag instead of merging it into the next paragraph.
+_CAPS_HEADING_BOOST = 1.4
+_CAPS_HEADING_MAX_WORDS = 10
+_CAPS_HEADING_MIN_LETTERS = 4  # "IV." or "PPR" alone is not a heading
+
+# Photo detection on scanned pages: the page scan is background (artifact), so a
+# photo inside it would otherwise have NO Figure tag at all -- invisible to
+# screen readers and never prompting for a description. Detection is a coarse
+# grid heuristic: inky (non-paper) cells that are not text lines, clustered into
+# rectangles. Each hit is re-emitted as its own cropped image object, which the
+# tagging engine then tags as a Figure (the human writes the description).
+_FIGURE_GRID = 96  # detection grid width in cells
+_FIGURE_INK_LEVEL = 215  # grayscale threshold: darker than this = ink, not paper
+_FIGURE_MIN_FRACTION = 0.015  # smallest region worth tagging: 1.5% of page area
+_FIGURE_MIN_FILL = 0.45  # photos are solid blobs; sparse scribbles are not photos
+_FIGURE_MAX_TEXT_LINES = 1  # more text lines inside = a text panel, not a photo
+
 # Tesseract reports a 0-100 confidence per word (hOCR x_wconf). Measured on the
 # corpus scans: pure noise (stains, ruled lines read as "ae ee ee") sits below
 # 20, real-but-faint words go as low as ~38. So: drop only near-certain-noise
@@ -291,14 +312,101 @@ def quantize_sizes(lines: list[OcrLine]) -> list[OcrLine]:
         return lines
     median = statistics.median(line.size for line in lines)
     for line in lines:
-        looks_like_heading = (
+        size_heading = (
             line.size >= _HEADING_RATIO * median
             and line.conf >= _HEADING_MIN_CONF
             and len(line.text.split()) <= _HEADING_MAX_WORDS
+            # a page number ("47") measures tall but is never a heading
+            and any(ch.isalpha() for ch in line.text)
         )
-        if not looks_like_heading:
+        if size_heading:
+            continue  # genuinely larger type: keep its measured size
+        if _is_caps_heading(line):
+            # body-sized but ALL-CAPS heading style: promote it so the tagging
+            # engine sees "larger than body" and emits a Heading tag.
+            line.size = max(line.size, _CAPS_HEADING_BOOST * median)
+        else:
             line.size = median
     return lines
+
+
+def _is_caps_heading(line: OcrLine) -> bool:
+    """A typewriter-style heading: short, confidently recognised, and every
+    letter a capital (see _CAPS_HEADING_BOOST)."""
+    letters = [ch for ch in line.text if ch.isalpha()]
+    return (
+        len(letters) >= _CAPS_HEADING_MIN_LETTERS
+        and all(ch.isupper() for ch in letters)
+        and len(line.text.split()) <= _CAPS_HEADING_MAX_WORDS
+        and line.conf >= _HEADING_MIN_CONF
+    )
+
+
+def detect_image_regions(image, lines: list[OcrLine]) -> list[tuple[int, int, int, int]]:
+    """Photo-like regions of a scanned page, as (x0, y0, x1, y1) page-pixel
+    boxes (top-left origin, like hOCR). Coarse on purpose: downscale to a grid,
+    call a cell 'ink' when it is darker than paper and not under a text line,
+    cluster ink cells, and keep solid, large, text-free clusters -- photos.
+    Misses are the status quo (untagged pixels); false positives surface as an
+    extra Figure the reviewer can see and ignore."""
+    gw = _FIGURE_GRID
+    gh = max(int(gw * image.height / image.width), 1)
+    small = image.convert("L").resize((gw, gh))
+    px = small.load()
+
+    # cells under recognised text lines are text, never photo
+    sx, sy = gw / image.width, gh / image.height
+    text = [[False] * gw for _ in range(gh)]
+    for line in lines:
+        for gy in range(int(line.y0 * sy), min(int(line.y1 * sy) + 1, gh)):
+            for gx in range(int(line.x0 * sx), min(int(line.x1 * sx) + 1, gw)):
+                text[gy][gx] = True
+
+    ink = [
+        [(px[x, y] < _FIGURE_INK_LEVEL) and not text[y][x] for x in range(gw)] for y in range(gh)
+    ]
+
+    # connected components (4-neighbour) over the small grid, plain BFS
+    seen = [[False] * gw for _ in range(gh)]
+    regions: list[tuple[int, int, int, int]] = []
+    min_cells = _FIGURE_MIN_FRACTION * gw * gh
+    for y in range(gh):
+        for x in range(gw):
+            if not ink[y][x] or seen[y][x]:
+                continue
+            queue = [(x, y)]
+            seen[y][x] = True
+            cells = 0
+            x0, y0, x1, y1 = x, y, x, y
+            while queue:
+                cx, cy = queue.pop()
+                cells += 1
+                x0, y0 = min(x0, cx), min(y0, cy)
+                x1, y1 = max(x1, cx), max(y1, cy)
+                for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
+                    if 0 <= nx < gw and 0 <= ny < gh and ink[ny][nx] and not seen[ny][nx]:
+                        seen[ny][nx] = True
+                        queue.append((nx, ny))
+            box_cells = (x1 - x0 + 1) * (y1 - y0 + 1)
+            if cells < min_cells or cells / box_cells < _FIGURE_MIN_FILL:
+                continue
+            # a region containing text lines is a text panel, not a photo
+            px_box = (
+                int(x0 / sx),
+                int(y0 / sy),
+                int((x1 + 1) / sx),
+                int((y1 + 1) / sy),
+            )
+            inside = sum(
+                1
+                for line in lines
+                if px_box[0] <= (line.x0 + line.x1) / 2 <= px_box[2]
+                and px_box[1] <= (line.y0 + line.y1) / 2 <= px_box[3]
+            )
+            if inside > _FIGURE_MAX_TEXT_LINES:
+                continue
+            regions.append(px_box)
+    return regions
 
 
 def text_width(text: str, size_pt: float) -> float:
@@ -321,11 +429,18 @@ def _escape(text: str) -> bytes:
     return escaped.encode("latin-1", errors="replace")
 
 
-def page_content(lines: list[OcrLine], w_px: int, h_px: int) -> bytes:
+def page_content(
+    lines: list[OcrLine],
+    w_px: int,
+    h_px: int,
+    figures: list[tuple[str, tuple[int, int, int, int]]] = (),
+) -> bytes:
     """The content stream for one OCR'd page: the scan image as an /Artifact
     (decorative background -- NOT document content, so the tagging engine has no
-    text-bearing Figure to wrap), then one invisible (render mode 3) text run
-    per line at its measured baseline, stretched to the line's box width."""
+    text-bearing Figure to wrap), then each detected photo region re-drawn as
+    its OWN image object (real content: the engine tags these as Figures and
+    the reviewer writes their descriptions), then one invisible (render mode 3)
+    text run per line at its measured baseline, stretched to the line's box."""
     w_pt, h_pt = w_px * _SCALE, h_px * _SCALE
     ops = [
         b"/Artifact BMC",
@@ -334,6 +449,15 @@ def page_content(lines: list[OcrLine], w_px: int, h_px: int) -> bytes:
         b"/Im0 Do",
         b"Q",
         b"EMC",
+    ]
+    for name, (x0, y0, x1, y1) in figures:
+        fw, fh = (x1 - x0) * _SCALE, (y1 - y0) * _SCALE
+        fx, fy = x0 * _SCALE, (h_px - y1) * _SCALE
+        ops.append(b"q")
+        ops.append(f"{fw:.2f} 0 0 {fh:.2f} {fx:.2f} {fy:.2f} cm".encode())
+        ops.append(f"/{name} Do".encode())
+        ops.append(b"Q")
+    ops += [
         b"BT",
         b"3 Tr",
     ]
@@ -356,28 +480,44 @@ def page_content(lines: list[OcrLine], w_px: int, h_px: int) -> bytes:
     return b"\n".join(ops)
 
 
-def add_page(pdf, image, lines: list[OcrLine]) -> None:
+def add_page(
+    pdf,
+    image,
+    lines: list[OcrLine],
+    regions: list[tuple[int, int, int, int]] = (),
+) -> None:
     """Append one page to `pdf` (a pikepdf.Pdf): `image` (a PIL image of the
-    scan) as a JPEG XObject plus the invisible text layer for `lines`."""
+    scan) as a JPEG XObject, each detected photo `region` as its own cropped
+    image object (content, so it gets a Figure tag), plus the invisible text
+    layer for `lines`."""
     import io
 
     import pikepdf
 
+    def jpeg_xobject(pil_image):
+        buf = io.BytesIO()
+        pil_image.convert("RGB").save(buf, format="JPEG", quality=_JPEG_QUALITY)
+        xobj = pikepdf.Stream(pdf, buf.getvalue())
+        xobj.Type = pikepdf.Name.XObject
+        xobj.Subtype = pikepdf.Name.Image
+        xobj.Width, xobj.Height = pil_image.width, pil_image.height
+        xobj.ColorSpace = pikepdf.Name.DeviceRGB
+        xobj.BitsPerComponent = 8
+        xobj.Filter = pikepdf.Name.DCTDecode
+        return xobj
+
     w_px, h_px = image.width, image.height
     page = pdf.add_blank_page(page_size=(w_px * _SCALE, h_px * _SCALE))
 
-    buf = io.BytesIO()
-    image.convert("RGB").save(buf, format="JPEG", quality=_JPEG_QUALITY)
-    xobj = pikepdf.Stream(pdf, buf.getvalue())
-    xobj.Type = pikepdf.Name.XObject
-    xobj.Subtype = pikepdf.Name.Image
-    xobj.Width, xobj.Height = w_px, h_px
-    xobj.ColorSpace = pikepdf.Name.DeviceRGB
-    xobj.BitsPerComponent = 8
-    xobj.Filter = pikepdf.Name.DCTDecode
+    xobjects = pikepdf.Dictionary(Im0=jpeg_xobject(image))
+    figures: list[tuple[str, tuple[int, int, int, int]]] = []
+    for k, region in enumerate(regions):
+        name = f"Fig{k}"
+        xobjects[pikepdf.Name("/" + name)] = jpeg_xobject(image.crop(region))
+        figures.append((name, region))
 
     page.Resources = pikepdf.Dictionary(
-        XObject=pikepdf.Dictionary(Im0=xobj),
+        XObject=xobjects,
         Font=pikepdf.Dictionary(
             F1=pikepdf.Dictionary(
                 Type=pikepdf.Name.Font,
@@ -386,7 +526,7 @@ def add_page(pdf, image, lines: list[OcrLine]) -> None:
             )
         ),
     )
-    page.Contents = pdf.make_stream(page_content(lines, w_px, h_px))
+    page.Contents = pdf.make_stream(page_content(lines, w_px, h_px, figures))
 
 
 class OcrStage:
@@ -510,7 +650,11 @@ class OcrStage:
                             f"(exit {proc.returncode}): {proc.stderr[:200]}"
                         )
                     hocr = stem.with_suffix(".hocr").read_text(encoding="utf-8")
-                    add_page(merged, image, parse_hocr(hocr))
+                    lines = parse_hocr(hocr)
+                    # photos inside the scan become their own image objects, so
+                    # the tag stage gives THEM Figure tags (the page background
+                    # itself stays an artifact -- see page_content).
+                    add_page(merged, image, lines, detect_image_regions(image, lines))
             finally:
                 doc.close()
             merged.save(out)

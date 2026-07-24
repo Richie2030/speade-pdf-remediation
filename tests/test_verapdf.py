@@ -124,6 +124,20 @@ def test_validate_falls_back_to_docker(monkeypatch):
     assert verapdf.VERAPDF_IMAGE in seen["cmd"]
 
 
+def test_validate_fails_closed_on_a_hung_runner(monkeypatch):
+    # a stuck Java process must not freeze a batch/decision forever.
+    monkeypatch.setattr(verapdf, "_local_cli", lambda: "verapdf")
+
+    def hang(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 0))
+
+    monkeypatch.setattr(subprocess, "run", hang)
+
+    result = verapdf.validate(Path("work/sample.pdf"))
+    assert result.passed is False
+    assert result.failed_clauses == ["verapdf-timeout"]
+
+
 def test_validate_fails_closed_with_no_runner(monkeypatch):
     # Neither a local CLI nor docker: fail closed WITHOUT spawning anything.
     monkeypatch.setattr(verapdf, "_local_cli", lambda: None)

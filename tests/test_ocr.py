@@ -98,13 +98,36 @@ def test_quantize_denies_heading_privilege_to_noisy_or_runaway_lines():
     body = [line(40.0) for _ in range(5)]  # enough body to anchor the median at 40
     noisy_big = line(80.0, conf=50.0)  # low confidence: demoted
     runaway_big = line(80.0, text="w " * 25)  # 25 words: a sentence, demoted
+    page_number = line(80.0, text="47")  # measures tall, but never a heading
     real_heading = line(80.0)  # confident + short: stays a heading
 
-    quantize_sizes([*body, noisy_big, runaway_big, real_heading])
+    quantize_sizes([*body, noisy_big, runaway_big, page_number, real_heading])
 
     assert noisy_big.size == 40.0
     assert runaway_big.size == 40.0
+    assert page_number.size == 40.0
     assert real_heading.size == 80.0
+
+
+def test_quantize_promotes_body_sized_all_caps_headings():
+    # typewriter-era headings ("CAPITAL GAINS TAX") are the SAME size as body
+    # text -- only caps/bold/underline mark them. The all-caps rule promotes
+    # them so the engine tags a Heading; ordinary sentences stay body-sized.
+    def line(text: str, conf: float = 100.0) -> OcrLine:
+        return OcrLine(text=text, x0=0, y0=0, x1=100, y1=30, size=40.0, baseline_dy=0, conf=conf)
+
+    caps = line("CAPITAL GAINS TAX")
+    caps_long = line("THIS WHOLE SENTENCE IS SHOUTED AT GREAT AND TIRESOME LENGTH INDEED YES")
+    caps_noisy = line("TERRITORIALITY RULES", conf=50.0)
+    acronym = line("PPR")  # too few letters: an acronym, not a heading
+    body = [line("a normal body sentence about capital gains") for _ in range(5)]
+
+    quantize_sizes([*body, caps, caps_long, caps_noisy, acronym])
+
+    assert caps.size == 40.0 * 1.4  # promoted: the engine will tag a Heading
+    assert caps_long.size == 40.0  # a shouted sentence is still a sentence
+    assert caps_noisy.size == 40.0  # low confidence: no heading privilege
+    assert acronym.size == 40.0
 
 
 def test_parse_hocr_drops_noise_words_and_junk_lines():
@@ -129,6 +152,58 @@ def test_parse_hocr_drops_noise_words_and_junk_lines():
 
     assert [line.text for line in lines] == ["Real text"]  # noise word gone
     assert lines[0].conf == pytest.approx(94.0)  # mean of the SURVIVING words
+
+
+def test_detect_image_regions_finds_photos_not_text():
+    PIL_Image = pytest.importorskip("PIL.Image", reason="needs Pillow (via pikepdf)")
+    from speade.stages.ocr import detect_image_regions
+
+    # a white page with one solid dark block: that is a photo-like region.
+    image = PIL_Image.new("L", (1000, 1400), 255)
+    image.paste(40, (200, 200, 600, 700))
+
+    regions = detect_image_regions(image, [])
+
+    assert len(regions) == 1
+    x0, y0, x1, y1 = regions[0]
+    assert abs(x0 - 200) < 40 and abs(y0 - 200) < 40
+    assert abs(x1 - 600) < 40 and abs(y1 - 700) < 40
+
+    # the same dark area "under" recognised text lines is a text panel, not a photo.
+    lines = [
+        OcrLine(text="some text", x0=210, y0=250, x1=590, y1=300, size=40, baseline_dy=0),
+        OcrLine(text="more text", x0=210, y0=350, x1=590, y1=400, size=40, baseline_dy=0),
+        OcrLine(text="even more", x0=210, y0=450, x1=590, y1=500, size=40, baseline_dy=0),
+    ]
+    assert detect_image_regions(image, lines) == []
+
+
+def test_page_content_draws_figures_as_content_not_artifact():
+    lines = parse_hocr(_HOCR)
+
+    content = page_content(lines, 1000, 1400, figures=[("Fig0", (100, 100, 400, 500))])
+
+    artifact_block, rest = content.split(b"EMC", 1)
+    assert b"/Fig0 Do" not in artifact_block  # NOT background...
+    assert b"/Fig0 Do" in rest  # ...but real content, so it earns a Figure tag
+
+
+def test_add_page_embeds_figure_crops(tmp_path):
+    pikepdf = pytest.importorskip("pikepdf", reason="needs --extra ocr")
+    PIL_Image = pytest.importorskip("PIL.Image", reason="needs Pillow (via pikepdf)")
+    from speade.stages.ocr import add_page
+
+    pdf = pikepdf.Pdf.new()
+    image = PIL_Image.new("RGB", (1000, 1400), "white")
+    add_page(pdf, image, parse_hocr(_HOCR), regions=[(100, 100, 400, 500)])
+    out = tmp_path / "page.pdf"
+    pdf.save(out)
+
+    with pikepdf.open(out) as doc:
+        xobjects = doc.pages[0].obj.Resources.XObject
+        assert "/Im0" in xobjects  # the page background
+        assert "/Fig0" in xobjects  # the photo crop, a separate image object
+        assert int(xobjects.Fig0.Width) == 300  # cropped, not the whole page
 
 
 def test_text_width_uses_real_helvetica_metrics():

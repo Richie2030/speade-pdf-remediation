@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -25,6 +26,10 @@ VERAPDF_IMAGE = "ghcr.io/verapdf/cli:latest"
 # Our config profile key -> veraPDF `--flavour` token. Kept explicit so a config
 # rename never silently changes the flavour veraPDF is asked to validate against.
 _FLAVOUR = {"ua1": "ua1"}
+
+# A hung validator must not freeze a batch or a decision forever; a validation
+# that cannot finish in this window fails closed like a missing runner would.
+_TIMEOUT_S = 300
 
 
 class VeraResult(BaseModel):
@@ -97,11 +102,14 @@ def validate(pdf: Path, profile: str = "ua1", cli: str | None = None) -> VeraRes
         # no veraPDF CLI and no docker -- can't verify, fail closed for the human gate.
         return VeraResult(passed=False, failed_clauses=["verapdf-unavailable"], profile=profile)
     try:
-        proc = subproc.run(cmd, capture_output=True, text=True)  # no check=True: see docstring
+        # no check=True: see docstring
+        proc = subproc.run(cmd, capture_output=True, text=True, timeout=_TIMEOUT_S)
         report = json.loads(proc.stdout)
     except FileNotFoundError:
         # the located/configured runner is missing after all -- same fail-closed rule.
         return VeraResult(passed=False, failed_clauses=["verapdf-unavailable"], profile=profile)
+    except subprocess.TimeoutExpired:
+        return VeraResult(passed=False, failed_clauses=["verapdf-timeout"], profile=profile)
     except json.JSONDecodeError:
         return VeraResult(passed=False, failed_clauses=["verapdf-bad-report"], profile=profile)
     return VeraResult.from_report(report, profile)
