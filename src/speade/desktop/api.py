@@ -20,6 +20,7 @@ import threading
 from pathlib import Path
 
 from speade import service, subproc
+from speade.pdfium_lock import PDFIUM_LOCK
 from speade.service import DEFAULT_CONFIG_PATH
 
 # Above this size the embedded preview is refused (a data: URI would bloat 4/3x
@@ -118,25 +119,30 @@ class SpeadeApi:
 
             import pypdfium2 as pdfium
 
-            doc = pdfium.PdfDocument(str(pdf))
-            try:
-                if not 0 <= index < len(doc):
-                    return {"error": f"no page {index + 1}"}
-                page = doc[index]
-                width, height = page.get_size()
-                scale = min(1400 / max(width, 1), 2.0)  # ~1400px wide: crisp, not huge
-                image = page.render(scale=scale).to_pil()
-                buf = io.BytesIO()
-                image.save(buf, format="PNG")
-                encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-                return {
-                    "data_uri": f"data:image/png;base64,{encoded}",
-                    "width": width,
-                    "height": height,
-                    "pages": len(doc),
-                }
-            finally:
-                doc.close()
+            # pdfium is not thread-safe, and pywebview runs every bridge call
+            # on its own thread -- scrolling fires many page_image calls at
+            # once (see speade.pdfium_lock).
+            with PDFIUM_LOCK:
+                doc = pdfium.PdfDocument(str(pdf))
+                try:
+                    pages = len(doc)
+                    if not 0 <= index < pages:
+                        return {"error": f"no page {index + 1}"}
+                    page = doc[index]
+                    width, height = page.get_size()
+                    scale = min(1400 / max(width, 1), 2.0)  # ~1400px wide: crisp
+                    image = page.render(scale=scale).to_pil()
+                finally:
+                    doc.close()
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+            encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+            return {
+                "data_uri": f"data:image/png;base64,{encoded}",
+                "width": width,
+                "height": height,
+                "pages": pages,
+            }
         except Exception as exc:
             return {"error": f"page image unavailable: {str(exc)[:120]}"}
 

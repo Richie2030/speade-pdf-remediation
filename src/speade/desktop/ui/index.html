@@ -20,6 +20,7 @@
     <button id="open-inbox">Open input folder</button>
     <button id="open-outbox">Open output folder</button>
     <button id="history">History</button>
+    <button id="help">Help</button>
     <div id="progress-wrap" hidden>
       <progress id="progress" max="1" value="0"></progress>
       <span id="progress-text"></span>
@@ -50,7 +51,12 @@
         <div id="doc-flags"></div>
 
         <div id="structure-wrap">
-          <div id="tag-tree" aria-label="Tag structure, click a tag to see it on the page"></div>
+          <div id="tree-side">
+            <label id="link-filter" hidden>
+              <input type="checkbox" id="show-links"> <span id="link-count"></span>
+            </label>
+            <div id="tag-tree" aria-label="Tag structure, click a tag to see it on the page"></div>
+          </div>
           <div id="page-side">
             <div id="page-stack"></div>
             <div id="structure-note" class="muted" hidden></div>
@@ -105,11 +111,11 @@
         <div class="gate">
           <div class="gate-title">Your decision, the app only makes a draft.
             Check the document (fix anything needed in Adobe Acrobat first),
-            then decide. Approving is the final step.</div>
-          <label for="reviewer">Your student number</label>
+            then decide. Approving is the final step. Changes are applied with both approve and reject.</div>
+          <label for="reviewer">Your student number / Name</label>
           <input id="reviewer" type="text" placeholder="e.g. 123456789" autocomplete="off">
-          <button id="approve" class="approve">Approve - ready to upload</button>
-          <button id="reject" class="reject">Reject - needs more work</button>
+          <button id="approve" class="approve">Approve - ready to be uploaded back to Canvas</button>
+          <button id="reject" class="reject">Reject - needs more work in Adobe Acrobat Pro</button>
           <div id="gate-result" class="muted"></div>
         </div>
       </div>
@@ -125,6 +131,78 @@
       </div>
     </section>
   </main>
+
+  <div id="help-overlay" hidden>
+    <div id="help-modal" role="dialog" aria-modal="true" aria-label="Help">
+      <div class="help-head">
+        <h2>How SPEADE works</h2>
+        <button id="help-close" aria-label="Close help">&times;</button>
+      </div>
+      <div class="help-body">
+        <h3>The six steps</h3>
+        <ol>
+          <li><b>Add PDFs&hellip;</b> — they appear under <i>Waiting to process</i>.</li>
+          <li><b>Process PDFs</b> — the app reads scans (OCR) and adds accessibility
+            tags. Already-processed files are skipped automatically.</li>
+          <li><b>Review</b> — click a document. The left side lists every heading,
+            paragraph, list, and image; the right side shows the pages with a box
+            around each tagged part. Click either side to highlight the other.</li>
+          <li><b>Title &amp; language</b> — set what a screen reader should announce,
+            then save.</li>
+          <li><b>Decide</b> — <i>Approve</i> (moves to the <code>approved</code>
+            folder, done) or <i>Reject</i> (moves to <code>rejected</code>).</li>
+          <li><b>Fix and return</b> — repair rejected PDFs in Adobe Acrobat Pro,
+            save over the same file, come back and <b>Approve</b>. Not approved =
+            not done.</li>
+        </ol>
+
+        <h3>What to check when reviewing</h3>
+        <ul>
+          <li>Do the headings in the list match the document's real headings?</li>
+          <li>Does the top-to-bottom order match sensible reading order?</li>
+          <li>Are lists and tables tagged as lists and tables?</li>
+          <li>Does every meaningful image say <b>Image</b> — and have a
+            description? ("(no description yet)" means you write one, in Acrobat.)</li>
+          <li>Is any visible content missing a box entirely? No box = not tagged.</li>
+        </ul>
+
+        <h3>Common questions</h3>
+        <dl>
+          <dt>Why did it skip some files when I pressed Process?</dt>
+          <dd>They were already processed and haven't changed. Replace the file in
+            the input folder with a new version to process it again.</dd>
+          <dt>What does "Edited since processing" mean?</dt>
+          <dd>The file changed after the app made it — normally because you fixed
+            it in Acrobat. That's expected; approving records the file as it is now.</dd>
+          <dt>A document says it is password-protected or damaged.</dt>
+          <dd>The app never guesses passwords and can't repair broken files. Ask
+            the document's owner for a usable copy and add it again.</dd>
+          <dt>What is the "automatic check"?</dt>
+          <dd>veraPDF, the official PDF/UA accessibility validator. Its verdict is
+            advice — your Approve/Reject is the decision, and it is recorded.</dd>
+          <dt>Who writes the image descriptions?</dt>
+          <dd>You do, in Acrobat — descriptions are never machine-written. That's
+            deliberate: quality needs a human.</dd>
+          <dt>Where do finished documents go?</dt>
+          <dd><code>outbox\approved</code> — share the PDF only; the app's record
+            files stay behind.</dd>
+        </dl>
+
+        <h3>The three rules</h3>
+        <ol>
+          <li><b>Originals are sacred</b> — corrections happen on the draft, never
+            the source file.</li>
+          <li><b>Nothing ships without a human</b> — only your Approve makes it
+            accessible.</li>
+          <li><b>When unsure, reject and ask</b> — the queue can wait; students
+            relying on the document can't.</li>
+        </ol>
+
+        <p class="muted">More detail: the full user guide and the Acrobat
+          correction guide are in the project's <code>docs</code> folder.</p>
+      </div>
+    </div>
+  </div>
 
   <!-- api.js is THE seam: the only file that knows how the UI reaches Python. -->
   <script src="api.js"></script>

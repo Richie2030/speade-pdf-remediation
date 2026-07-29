@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from speade import subproc
+from speade.pdfium_lock import PDFIUM_LOCK
 from speade.pipeline.contract import Route, Sidecar, StageResult
 
 # Default Windows installer location, probed when tesseract isn't on PATH (the
@@ -631,11 +632,16 @@ class OcrStage:
         merged = pikepdf.Pdf.new()
         with tempfile.TemporaryDirectory(prefix="speade_ocr_") as tmp:
             tmpd = Path(tmp)
-            doc = pdfium.PdfDocument(str(pdf))
+            # pdfium is not thread-safe (see speade.pdfium_lock): hold the lock
+            # for each render, but NOT while Tesseract runs, so the tags view
+            # stays usable while a batch is processing.
+            with PDFIUM_LOCK:
+                doc = pdfium.PdfDocument(str(pdf))
             try:
                 for i in range(len(doc)):
                     png = tmpd / f"pg_{i:04d}.png"
-                    image = doc[i].render(scale=_DPI / 72).to_pil()
+                    with PDFIUM_LOCK:
+                        image = doc[i].render(scale=_DPI / 72).to_pil()
                     image.save(png)
                     stem = tmpd / f"pg_{i:04d}"
                     proc = subproc.run(
@@ -656,5 +662,6 @@ class OcrStage:
                     # itself stays an artifact -- see page_content).
                     add_page(merged, image, lines, detect_image_regions(image, lines))
             finally:
-                doc.close()
+                with PDFIUM_LOCK:
+                    doc.close()
             merged.save(out)

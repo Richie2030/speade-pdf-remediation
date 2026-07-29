@@ -11,6 +11,7 @@ let selected = null;
 let structTree = null; // the fetched tree for `selected`
 let structSelectedRow = null; // the highlighted .tnode element
 let pageObserver = null; // lazy-loads page images as bands scroll into view
+let showLinks = false; // inline links hidden by default (see isHiddenLink)
 
 // ------------------------------------------------- plain-language dictionaries
 const STATUS_TEXT = {
@@ -311,6 +312,11 @@ async function loadStructure(file, retrying = false) {
     note.textContent = tree.error + " - this document cannot be displayed here.";
     return;
   }
+  const links = tree.tagged ? countLinks(tree.root) : 0;
+  const filter = $("link-filter");
+  filter.hidden = links === 0;
+  $("link-count").textContent = `Show ${links} link${links === 1 ? "" : "s"} (citations, URLs)`;
+  $("show-links").checked = showLinks;
   if (!tree.tagged) {
     $("tag-tree").innerHTML =
       '<div class="muted">No tags yet - this document has no accessibility structure.</div>';
@@ -320,9 +326,24 @@ async function loadStructure(file, retrying = false) {
   renderPageStack(file);
 }
 
+// Inline links (hyperlinked citations) are content, but an academic paper can
+// carry hundreds of them -- they bury the real structure in both the tree and
+// the page boxes. They are hidden by default and restored by the checkbox;
+// this is a VIEW filter only, the tags in the PDF are untouched.
+function isHiddenLink(node) {
+  return node.type === "Link" && !showLinks;
+}
+
+function countLinks(nodes) {
+  let n = 0;
+  for (const node of nodes) n += (node.type === "Link" ? 1 : 0) + countLinks(node.kids);
+  return n;
+}
+
 // every leaf tag's box, grouped by page -- drawn permanently, Acrobat-style.
 function collectLeafBoxes(nodes, out) {
   for (const node of nodes) {
+    if (isHiddenLink(node)) continue;
     if (node.kids.length) collectLeafBoxes(node.kids, out);
     else if (node.box && node.page !== null) (out[node.page] ||= []).push(node);
   }
@@ -342,6 +363,11 @@ function nodeBox(node, size) {
   boxStyle(div, node.box, size);
   div.title = typeText(node.type) + (node.text ? ` - ${node.text}` : "");
   div.onclick = () => selectNode(node, { scrollTree: true });
+  // Acrobat-style chip at the box's top-left naming the tag type.
+  const tag = document.createElement("span");
+  tag.className = "btag";
+  tag.textContent = node.type;
+  div.appendChild(tag);
   return div;
 }
 
@@ -389,12 +415,28 @@ function renderPageStack(file) {
   bands.forEach((b) => pageObserver.observe(b));
 }
 
+// Some tags carry no text of their own because it lives in a child (a title
+// wrapped in a link, for example). Borrow the descendants' text so the row
+// reads as something instead of blank.
+function descendantText(node) {
+  const parts = [];
+  const walk = (n) => {
+    for (const kid of n.kids) {
+      if (kid.text) parts.push(kid.text);
+      walk(kid);
+    }
+  };
+  walk(node);
+  return parts.join(" ").slice(0, 120);
+}
+
 function renderTree() {
   const box = $("tag-tree");
   box.innerHTML = "";
   structSelectedRow = null;
   const build = (nodes, container) => {
     for (const node of nodes) {
+      if (isHiddenLink(node)) continue;
       const row = document.createElement("div");
       row.className = "tnode";
       const caret = document.createElement("span");
@@ -406,7 +448,9 @@ function renderTree() {
       const text = document.createElement("span");
       text.className = "ttext";
       text.textContent =
-        node.text || (node.type === "Figure" ? node.alt || "(no description yet)" : "");
+        node.text ||
+        (node.type === "Figure" ? node.alt || "(no description yet)" : "") ||
+        descendantText(node); // a title whose text sits in a child link etc.
       row.append(caret, type, text);
       container.appendChild(row);
       let kidsBox = null;
@@ -500,11 +544,14 @@ async function decide(approve) {
     const verdict = result.verapdf_passed
       ? "automatic check passed"
       : "automatic check found issues (" + (result.failed_clauses.join(", ") || "unlisted") + ")";
+    // refresh FIRST: renderDetail clears gate-result, so the outcome message
+    // must be written after the re-render or the reviewer never sees it
+    // (found by the automated browser QA run).
+    await refresh();
     const where = approve
       ? "Approved - moved to the approved folder, ready to upload."
       : "Rejected - moved to the rejected folder. Fix it in Adobe Acrobat, then come back here and approve it.";
     $("gate-result").textContent = `${where} Recorded by ${result.reviewer}; ${verdict}.`;
-    await refresh();
   } catch (err) {
     $("gate-result").textContent = "Error: " + err;
   } finally {
@@ -644,6 +691,21 @@ async function init() {
   $("approve").onclick = () => decide(true);
   $("reject").onclick = () => decide(false);
   $("history").onclick = toggleHistory;
+  $("show-links").onchange = () => {
+    showLinks = $("show-links").checked;
+    if (structTree && structTree.tagged && selected) {
+      renderTree();
+      renderPageStack(selected);
+    }
+  };
+  $("help").onclick = () => ($("help-overlay").hidden = false);
+  $("help-close").onclick = () => ($("help-overlay").hidden = true);
+  $("help-overlay").onclick = (e) => {
+    if (e.target === $("help-overlay")) $("help-overlay").hidden = true;
+  };
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") $("help-overlay").hidden = true;
+  });
 
   // full paths live in the folder buttons' tooltips, not the header.
   const ws = await api.workspace();

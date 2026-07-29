@@ -21,6 +21,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from speade.pdfium_lock import PDFIUM_LOCK
+
 _HEADING_TYPES = {"/H", "/H1", "/H2", "/H3", "/H4", "/H5", "/H6"}
 
 _MAX_NODES = 3000  # a pathological tree must not freeze the UI
@@ -168,10 +170,19 @@ def _union(a: list[float] | None, b: list[float] | None) -> list[float] | None:
 
 def structure_tree(pdf: Path) -> StructureTree:
     """The document's full tag tree with per-node page + box + text snippet.
-    Raises on an unreadable file; returns tagged=False for an untagged one."""
+    Raises on an unreadable file; returns tagged=False for an untagged one.
+
+    Holds PDFIUM_LOCK for the whole read: pdfium is not thread-safe, and the
+    geometry/snippet reads interleave with the tree walk (speade.pdfium_lock).
+    """
     import pikepdf
     import pypdfium2 as pdfium
 
+    with PDFIUM_LOCK:
+        return _structure_tree_unlocked(pdf, pikepdf, pdfium)
+
+
+def _structure_tree_unlocked(pdf: Path, pikepdf, pdfium) -> StructureTree:
     fpdf = pdfium.PdfDocument(str(pdf))
     try:
         geo = _mcid_boxes(fpdf)
