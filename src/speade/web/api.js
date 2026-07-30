@@ -58,6 +58,12 @@ const api = {
     postJSON("/api/tag_type", { file, node_id: nodeId, new_type: newType }),
   setFigureAlt: (file, nodeId, alt) =>
     postJSON("/api/figure_alt", { file, node_id: nodeId, alt }),
+  makeDecorative: (file, nodeId) => postJSON("/api/decorative", { file, node_id: nodeId }),
+  moveTag: (file, nodeId, delta) =>
+    postJSON("/api/move_tag", { file, node_id: nodeId, delta }),
+  unwrapTag: (file, nodeId) => postJSON("/api/unwrap_tag", { file, node_id: nodeId }),
+  undoLastEdit: (file) => postJSON("/api/undo_last_edit", { file }),
+  removeAllTags: (file) => postJSON("/api/remove_all_tags", { file }),
   reprocess: (file) => postJSON("/api/reprocess", { file }),
   pageImage: (file, index) =>
     getJSON(

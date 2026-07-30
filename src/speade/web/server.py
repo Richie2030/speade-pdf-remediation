@@ -57,6 +57,17 @@ class AltBody(BaseModel):
     alt: str = ""
 
 
+class NodeBody(BaseModel):
+    file: str
+    node_id: int
+
+
+class MoveBody(BaseModel):
+    file: str
+    node_id: int
+    delta: int
+
+
 def create_app(config_path: Path | None = None) -> FastAPI:
     cfg = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
     bridge = SpeadeApi(cfg)  # headless: no window; uploads replace the native dialog
@@ -151,6 +162,26 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     @app.post("/api/figure_alt")
     def set_figure_alt(body: AltBody) -> dict:
         return bridge.set_figure_alt(body.file, body.node_id, body.alt)
+
+    @app.post("/api/decorative")
+    def make_decorative(body: NodeBody) -> dict:
+        return bridge.make_decorative(body.file, body.node_id)
+
+    @app.post("/api/move_tag")
+    def move_tag(body: MoveBody) -> dict:
+        return bridge.move_tag(body.file, body.node_id, body.delta)
+
+    @app.post("/api/unwrap_tag")
+    def unwrap_tag(body: NodeBody) -> dict:
+        return bridge.unwrap_tag(body.file, body.node_id)
+
+    @app.post("/api/undo_last_edit")
+    def undo_last_edit(body: FileBody) -> dict:
+        return bridge.undo_last_edit(body.file)
+
+    @app.post("/api/remove_all_tags")
+    def remove_all_tags(body: FileBody) -> dict:
+        return bridge.remove_all_tags(body.file)
 
     @app.post("/api/reprocess")
     def reprocess(body: FileBody) -> dict:

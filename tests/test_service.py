@@ -369,6 +369,117 @@ def test_set_figure_alt_writes_and_clears_the_description(tmp_path):
     assert service.audit_events(config)[0]["event"] == "edit-alt"
 
 
+def test_make_decorative_and_move_and_remove_are_audited(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    config = _write_config(tmp_path)
+    _tagged_source(tmp_path)
+    service.run_batch(None, config)
+    out = tmp_path / "outbox" / "doc.pdf"
+
+    # reading order: the Figure moves ahead of the paragraph
+    figure = service.structure_tree(out).root[0].kids[1]
+    moved = service.move_tag(out, figure.id, -1, config)
+    assert moved["ok"] and moved["direction"] == "earlier"
+    assert [k.type for k in service.structure_tree(out).root[0].kids] == ["Figure", "P"]
+    assert service.audit_events(config)[0]["event"] == "edit-order"
+    with pytest.raises(ValueError, match="delta must be"):
+        service.move_tag(out, figure.id, 3, config)
+
+    # decorative: gone from the tree, no description needed
+    again = service.structure_tree(out).root[0].kids
+    deco = service.make_decorative(out, again[0].id, config)
+    assert deco["ok"] and deco["was"] == "Figure"
+    assert [k.type for k in service.structure_tree(out).root[0].kids] == ["P"]
+    assert service.audit_events(config)[0]["event"] == "edit-decorative"
+
+    # the escape hatch
+    stripped = service.remove_all_tags(out, config)
+    assert stripped["ok"] and stripped["had_tags"] is True
+    assert service.structure_tree(out).tagged is False
+    assert service.audit_events(config)[0]["event"] == "edit-remove-tags"
+
+
+def test_undo_last_edit_steps_back_one_change_at_a_time(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    config = _write_config(tmp_path)
+    _tagged_source(tmp_path)
+    service.run_batch(None, config)
+    out = tmp_path / "outbox" / "doc.pdf"
+    para = service.structure_tree(out).root[0].kids[0]
+
+    assert service.undo_depth("doc.pdf", config) == 0
+    with pytest.raises(LookupError, match="nothing to undo"):
+        service.undo_last_edit(out, config)
+
+    service.set_tag_type(out, para.id, "H2", config)
+    service.set_tag_type(out, para.id, "H3", config)
+    assert service.undo_depth("doc.pdf", config) == 2
+    assert service.list_queue(config)[0].undo_depth == 2
+
+    result = service.undo_last_edit(out, config)  # H3 -> H2
+    assert result["ok"] and result["undo_depth"] == 1
+    assert service.structure_tree(out).root[0].kids[0].type == "H2"
+
+    service.undo_last_edit(out, config)  # H2 -> P (the original)
+    assert service.structure_tree(out).root[0].kids[0].type == "P"
+    assert service.undo_depth("doc.pdf", config) == 0
+    assert service.audit_events(config)[0]["event"] == "edit-undo"
+
+    # a decision closes the session: no stale history to step into
+    service.set_tag_type(out, para.id, "H2", config)
+    assert service.undo_depth("doc.pdf", config) == 1
+    service.decide(out, reviewer="s1", approve=True, config_path=config)
+    assert service.undo_depth("doc.pdf", config) == 0
+
+
+def test_unwrap_tag_removes_a_wrapper_and_is_audited(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    pikepdf = pytest.importorskip("pikepdf", reason="needs --extra tag")
+    config = _write_config(tmp_path)
+    # a paragraph wrapped in a bogus List, as the tagging engine sometimes does
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(612, 792))
+    page.Resources = pikepdf.Dictionary(
+        Font=pikepdf.Dictionary(
+            F1=pikepdf.Dictionary(
+                Type=pikepdf.Name.Font,
+                Subtype=pikepdf.Name.Type1,
+                BaseFont=pikepdf.Name.Helvetica,
+            )
+        )
+    )
+    page.Contents = pdf.make_stream(
+        b"/P <</MCID 0>> BDC BT /F1 12 Tf 72 700 Td (not a list) Tj ET EMC"
+    )
+    body = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name.P, K=0, Pg=page.obj))
+    wrapper = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name.L, K=body))
+    pdf.Root.StructTreeRoot = pdf.make_indirect(
+        pikepdf.Dictionary(
+            Type=pikepdf.Name.StructTreeRoot,
+            K=pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/Document"), K=wrapper)),
+        )
+    )
+    pdf.save(tmp_path / "inbox" / "wrapped.pdf")
+    service.run_batch(None, config)
+    out = tmp_path / "outbox" / "wrapped.pdf"
+
+    the_list = service.structure_tree(out).root[0].kids[0]
+    result = service.unwrap_tag(out, the_list.id, config)
+
+    assert result["ok"] and result["was"] == "L" and result["promoted"] == 1
+    assert [k.type for k in service.structure_tree(out).root[0].kids] == ["P"]
+    assert service.audit_events(config)[0]["event"] == "edit-unwrap"
+    # a REFUSED edit must not leave a no-op step in the undo history
+    depth = service.undo_depth("wrapped.pdf", config)
+    para = service.structure_tree(out).root[0].kids[0]
+    with pytest.raises(ValueError, match="would leave that content untagged"):
+        service.unwrap_tag(out, para.id, config)
+    assert service.undo_depth("wrapped.pdf", config) == depth
+    # and the undo stack can put the wrapper back
+    service.undo_last_edit(out, config)
+    assert [k.type for k in service.structure_tree(out).root[0].kids] == ["L"]
+
+
 def test_reprocess_undoes_edits_from_the_original(tmp_path):
     pytest.importorskip("pypdfium2", reason="needs --extra ocr")
     config = _write_config(tmp_path)

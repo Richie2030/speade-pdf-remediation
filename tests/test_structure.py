@@ -154,6 +154,139 @@ def test_edit_element_retags_and_writes_alt(tmp_path):
     assert not list(tmp_path.glob("*.editing"))  # no temp file left behind
 
 
+def test_make_decorative_removes_it_and_artifacts_the_content(tmp_path):
+    # the "decorative image needs no description" answer: out of the reading
+    # order AND its page content re-marked /Artifact, so nothing announces it.
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import make_decorative, structure_tree
+
+    out = _tagged_pdf(tmp_path, "deco.pdf")
+    before = structure_tree(out)
+    para = before.root[0].kids[0]  # the /P that owns MCID 0
+
+    result = make_decorative(out, para.id)
+
+    assert result["was"] == "P"
+    assert result["artifacts"] == 1  # one BDC rewritten to /Artifact BMC
+    after = structure_tree(out)
+    assert [k.type for k in after.root[0].kids] == ["Figure"]  # gone from the tree
+    with pikepdf.open(out) as doc:
+        content = doc.pages[0].Contents.read_bytes()
+        assert b"/Artifact BMC" in content
+        assert b"/MCID" not in content  # the only marked content was reclassified
+        assert b"(A heading)" in content  # still drawn: visually identical
+
+
+def test_move_element_reorders_siblings(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import move_element, structure_tree
+
+    out = _tagged_pdf(tmp_path, "order.pdf")
+    tree = structure_tree(out)
+    assert [k.type for k in tree.root[0].kids] == ["P", "Figure"]
+    figure = tree.root[0].kids[1]
+
+    moved = move_element(out, figure.id, -1)  # the Figure should read first
+
+    assert moved == {"moved": True, "from": 1, "to": 0}
+    assert [k.type for k in structure_tree(out).root[0].kids] == ["Figure", "P"]
+    # at the edge it reports no-op rather than silently wrapping around
+    first = structure_tree(out).root[0].kids[0]
+    assert move_element(out, first.id, -1)["moved"] is False
+
+
+def test_remove_all_tags_strips_the_tree(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import remove_all_tags, structure_tree
+
+    out = _tagged_pdf(tmp_path, "strip.pdf")
+    with pikepdf.open(out, allow_overwriting_input=True) as doc:
+        doc.Root.MarkInfo = pikepdf.Dictionary({"/Marked": True})
+        doc.save(out.with_suffix(".marked.pdf"))
+    marked = out.with_suffix(".marked.pdf")
+
+    result = remove_all_tags(marked)
+
+    assert result["had_tags"] is True
+    assert structure_tree(marked).tagged is False
+    with pikepdf.open(marked) as doc:
+        assert "/StructTreeRoot" not in doc.Root
+        assert "/MarkInfo" not in doc.Root  # no longer claims to be tagged
+        assert b"(A heading)" in doc.pages[0].Contents.read_bytes()  # content intact
+
+
+def test_unwrap_keeps_contents_but_refuses_content_bearing_tags(tmp_path):
+    # "remove this tag" is only legitimate for a WRAPPER: deleting a tag that
+    # holds page content would leave that content untagged (a PDF/UA failure),
+    # so the engine must refuse and point at retag / decorative instead.
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import structure_tree, unwrap_element
+
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(612, 792))
+    page.Resources = pikepdf.Dictionary(
+        Font=pikepdf.Dictionary(
+            F1=pikepdf.Dictionary(
+                Type=pikepdf.Name.Font,
+                Subtype=pikepdf.Name.Type1,
+                BaseFont=pikepdf.Name.Helvetica,
+            )
+        )
+    )
+    page.Contents = pdf.make_stream(
+        b"/P <</MCID 0>> BDC BT /F1 12 Tf 72 700 Td (item text) Tj ET EMC"
+    )
+    body = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name.P, K=0, Pg=page.obj))
+    bogus_list = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name.L, K=body))
+    doc_elem = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/Document"), K=bogus_list))
+    pdf.Root.StructTreeRoot = pdf.make_indirect(
+        pikepdf.Dictionary(Type=pikepdf.Name.StructTreeRoot, K=doc_elem)
+    )
+    out = tmp_path / "unwrap.pdf"
+    pdf.save(out)
+
+    tree = structure_tree(out)
+    the_list = tree.root[0].kids[0]
+    the_para = the_list.kids[0]
+
+    # the paragraph owns the page content: refuse, with a useful message
+    with pytest.raises(ValueError, match="would leave that content untagged"):
+        unwrap_element(out, the_para.id)
+
+    # the bogus List wraps it: unwrap promotes the paragraph in its place
+    result = unwrap_element(out, the_list.id)
+
+    assert result == {"was": "L", "promoted": 1}
+    after = structure_tree(out)
+    assert [k.type for k in after.root[0].kids] == ["P"]
+    assert after.root[0].kids[0].text.startswith("item text")
+
+
+def test_summarize_reports_heading_level_skips(tmp_path):
+    from speade.validation.structure import summarize
+
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(612, 792))
+    kids = pikepdf.Array(
+        [
+            pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/H1"))),
+            pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/H3"))),  # skip
+            pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/H4"))),  # fine
+        ]
+    )
+    doc_elem = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/Document"), K=kids))
+    pdf.Root.StructTreeRoot = pdf.make_indirect(
+        pikepdf.Dictionary(Type=pikepdf.Name.StructTreeRoot, K=doc_elem)
+    )
+    out = tmp_path / "skips.pdf"
+    pdf.save(out)
+
+    summary = summarize(out)
+
+    assert summary.headings == 3
+    assert summary.heading_skips == ["H1 to H3"]  # veraPDF 7.4.2-1
+
+
 def test_structure_tree_untagged_pdf(tmp_path):
     pytest.importorskip("pypdfium2", reason="needs --extra ocr")
     from speade.validation.structure import structure_tree

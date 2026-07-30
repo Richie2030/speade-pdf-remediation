@@ -193,10 +193,18 @@ function structureText(s) {
   if (s.tables) parts.push(`${s.tables} table${s.tables === 1 ? "" : "s"}`);
   if (s.figures) {
     let f = `${s.figures} image${s.figures === 1 ? "" : "s"}`;
-    if (s.figures_missing_alt) f += ` (${s.figures_missing_alt} missing a description, add it in Acrobat)`;
+    if (s.figures_missing_alt) {
+      f += ` (${s.figures_missing_alt} still need a description, marked below)`;
+    }
     parts.push(f);
   }
-  return "Tagged: " + parts.join(", ");
+  let text = "Tagged: " + parts.join(", ");
+  // heading skips are veraPDF clause 7.4.2-1 and are fixed by retagging, so
+  // name them here rather than leaving the reviewer to spot them.
+  if (s.heading_skips && s.heading_skips.length) {
+    text += `. Heading levels skip (${s.heading_skips.join(", ")}) - retag to fix`;
+  }
+  return text;
 }
 
 async function renderDetail() {
@@ -234,6 +242,10 @@ async function renderDetail() {
   // cannot miss (the old one-line fact row was too quiet), plus the queue chip.
   $("edited-banner").hidden = item.output_changed !== true;
   $("revert").hidden = item.output_changed !== true;
+  const undos = item.undo_depth || 0;
+  $("undo-last").hidden = undos === 0;
+  $("undo-last").textContent =
+    undos > 1 ? `Undo last change (${undos} available)` : "Undo last change";
 
   // structure summary arrives async; guard against a stale selection.
   api.structure(item.file).then((s) => {
@@ -465,6 +477,14 @@ function renderTree() {
         (node.type === "Figure" ? node.alt || "(no description yet)" : "") ||
         descendantText(node); // a title whose text sits in a child link etc.
       row.append(caret, type, text);
+      // an image with no description is the one thing a reviewer must not miss
+      if ((node.type === "Figure" || node.type === "Formula") && !node.alt) {
+        row.classList.add("needs-attention");
+        const warn = document.createElement("span");
+        warn.className = "tflag";
+        warn.textContent = "needs description";
+        row.appendChild(warn);
+      }
       container.appendChild(row);
       let kidsBox = null;
       if (node.kids.length) {
@@ -564,6 +584,95 @@ async function saveAlt() {
   const result = await api.setFigureAlt(selected, selectedNode.id, $("figure-alt").value);
   $("save-alt").disabled = false;
   await afterEdit(result, $("figure-alt").value.trim() ? "Description saved" : "Description cleared");
+}
+
+async function unwrapTag() {
+  if (!selectedNode) return;
+  const what = typeText(selectedNode.type);
+  $("unwrap-tag").disabled = true;
+  $("editor-result").textContent = "Saving…";
+  const result = await api.unwrapTag(selected, selectedNode.id);
+  $("unwrap-tag").disabled = false;
+  if (result.error) {
+    $("editor-result").textContent = result.error;
+    return;
+  }
+  selectedNode = null; // the tag no longer exists
+  await afterEdit(result, `${what} tag removed, its contents kept`);
+  $("tag-editor").hidden = true;
+}
+
+async function markDecorative() {
+  if (!selectedNode) return;
+  const what = typeText(selectedNode.type);
+  // decoration is skipped by screen readers: if this tag carries real text,
+  // make the reviewer confirm rather than silently hiding content.
+  if (selectedNode.text && selectedNode.text.trim().length > 3) {
+    const ok = window.confirm(
+      `This ${what} contains text:\n\n"${selectedNode.text.slice(0, 120)}"\n\n` +
+        "Marking it decorative removes it from the reading order, so a screen " +
+        "reader will not read it out. Do that only for decoration (borders, " +
+        "page numbers, background scans).\n\nContinue?"
+    );
+    if (!ok) return;
+  }
+  $("make-decorative").disabled = true;
+  $("editor-result").textContent = "Saving…";
+  const result = await api.makeDecorative(selected, selectedNode.id);
+  $("make-decorative").disabled = false;
+  // the tag is gone from the tree, so there is nothing to re-select afterwards
+  selectedNode = null;
+  await afterEdit(result, `${what} is now decoration (no description needed)`);
+  $("tag-editor").hidden = true;
+}
+
+async function moveTag(delta) {
+  if (!selectedNode) return;
+  const button = delta < 0 ? $("move-earlier") : $("move-later");
+  button.disabled = true;
+  $("editor-result").textContent = "Saving…";
+  const result = await api.moveTag(selected, selectedNode.id, delta);
+  button.disabled = false;
+  if (result.moved === false) {
+    $("editor-result").textContent = "Already at the " + (delta < 0 ? "start" : "end") +
+      " of its group. Bigger moves are an Acrobat job.";
+    return;
+  }
+  await afterEdit(result, `Moved ${delta < 0 ? "earlier" : "later"} in the reading order`);
+}
+
+async function removeAllTags() {
+  if (!selected) return;
+  if (!window.confirm(
+    "Remove the whole tag structure from this document?\n\n" +
+    "The document stays readable but loses all accessibility tagging, so it " +
+    "must be tagged again (in Acrobat, or by pressing Undo all edits).")) {
+    return;
+  }
+  const file = selected;
+  $("remove-tags").disabled = true;
+  setStatus("Removing the tag structure…");
+  const result = await api.removeAllTags(file);
+  $("remove-tags").disabled = false;
+  setStatus(result.error ? result.error : "Tag structure removed.");
+  selectedNode = null;
+  $("tag-editor").hidden = true;
+  await refresh();
+  if (selected === file) await loadStructure(file);
+}
+
+async function undoLast() {
+  if (!selected) return;
+  const file = selected;
+  $("undo-last").disabled = true;
+  setStatus("Undoing the last change…");
+  const result = await api.undoLastEdit(file);
+  $("undo-last").disabled = false;
+  setStatus(result.error ? result.error : "Last change undone.");
+  selectedNode = null;
+  $("tag-editor").hidden = true;
+  await refresh();
+  if (selected === file) await loadStructure(file);
 }
 
 async function revertDocument() {
@@ -744,6 +853,20 @@ async function addPdfs() {
 }
 
 // ------------------------------------------------------------------ history
+// Reviewer edits are part of the trust trail, so History must read them in
+// plain language instead of showing the raw event name.
+const EDIT_TEXT = {
+  "edit-tag": (e) => `retagged ${typeText(e.from)} as ${typeText(e.to)}`,
+  "edit-alt": (e) =>
+    e.described ? "image description added" : "image description cleared",
+  "edit-decorative": (e) => `${typeText(e.was)} marked decorative`,
+  "edit-unwrap": (e) => `${typeText(e.was)} tag removed, contents kept`,
+  "edit-order": (e) => `a tag moved ${e.direction} in the reading order`,
+  "edit-remove-tags": () => "all tags removed",
+  "edit-undo": () => "last change undone",
+  "edit-metadata": () => "title / language saved",
+};
+
 function historyRow(e) {
   const when = e.ts ? new Date(e.ts).toLocaleString() : "-";
   const file = e.file || "-";
@@ -755,6 +878,8 @@ function historyRow(e) {
     what =
       `${STATUS_TEXT[e.decision] || e.decision} by ${e.reviewer}` +
       ` - automatic check ${e.verapdf_passed ? "passed" : "found issues"}`;
+  } else if (EDIT_TEXT[e.event]) {
+    what = EDIT_TEXT[e.event](e);
   } else {
     what = e.event;
   }
@@ -800,7 +925,16 @@ async function init() {
   };
   $("save-tag-type").onclick = saveTagType;
   $("save-alt").onclick = saveAlt;
+  $("make-decorative").onclick = markDecorative;
+  $("unwrap-tag").onclick = unwrapTag;
+  $("move-earlier").onclick = () => moveTag(-1);
+  $("move-later").onclick = () => moveTag(1);
+  $("remove-tags").onclick = removeAllTags;
+  $("undo-last").onclick = undoLast;
   $("revert").onclick = revertDocument;
+  $("figure-alt").onkeydown = (e) => {
+    if (e.key === "Enter") saveAlt();
+  };
   tagTypes = await api.tagTypes();
   $("help").onclick = () => ($("help-overlay").hidden = false);
   $("help-close").onclick = () => ($("help-overlay").hidden = true);

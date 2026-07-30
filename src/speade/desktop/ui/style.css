@@ -131,6 +131,11 @@ main { flex: 1; display: flex; min-height: 0; }
 .tnode .ttype { font-weight: 700; color: var(--ucc-navy); white-space: nowrap; font-size: 14px; }
 .tnode .ttext { color: var(--ink-muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tnode .caret { width: 14px; text-align: center; color: var(--ink-muted); flex: none; }
+.tnode.needs-attention { background: #fff8e6; }
+.tnode .tflag {
+  flex: none; font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 8px;
+  background: var(--ucc-yellow); color: #4a3400;
+}
 .tkids { margin-left: 16px; }
 .tkids.collapsed { display: none; }
 #page-side { flex: 1; min-width: 0; overflow-y: auto; background: var(--bg); border-radius: 6px; padding: 10px; }
@@ -192,7 +197,10 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 #edited-banner span { color: #6d5307; }
 .chip.edited { background: var(--ucc-yellow); color: #4a3400; }
-#revert { min-height: 36px; padding: 4px 12px; font-size: 14px; }
+.head-actions { display: flex; gap: 8px; flex: none; }
+.head-actions button { min-height: 36px; padding: 4px 12px; font-size: 14px; }
+#remove-tags { border-color: var(--bad); color: var(--bad); }
+#remove-tags:hover { background: #fbeceb; }
 
 #tag-editor {
   margin-top: 12px; padding: 12px 14px; background: #fff;

@@ -258,6 +258,65 @@ class SpeadeApi:
         except Exception as exc:
             return {"error": f"could not save the description: {str(exc)[:120]}"}
 
+    def make_decorative(self, file: str, node_id: int) -> dict:
+        """Mark one element as decoration (out of the reading order, no
+        description needed) -- the answer for decorative images."""
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
+        try:
+            return service.make_decorative(pdf, int(node_id), self._config_path)
+        except LookupError as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            return {"error": f"could not mark it decorative: {str(exc)[:120]}"}
+
+    def move_tag(self, file: str, node_id: int, delta: int) -> dict:
+        """Move one tag earlier (-1) or later (+1) in the reading order."""
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
+        try:
+            return service.move_tag(pdf, int(node_id), int(delta), self._config_path)
+        except (ValueError, LookupError) as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            return {"error": f"could not move the tag: {str(exc)[:120]}"}
+
+    def unwrap_tag(self, file: str, node_id: int) -> dict:
+        """Remove one tag but keep its contents (unwrap a bogus wrapper)."""
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
+        try:
+            return service.unwrap_tag(pdf, int(node_id), self._config_path)
+        except (ValueError, LookupError) as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            return {"error": f"could not remove the tag: {str(exc)[:120]}"}
+
+    def undo_last_edit(self, file: str) -> dict:
+        """Step back one edit (the snapshot taken before it)."""
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
+        try:
+            return service.undo_last_edit(pdf, self._config_path)
+        except LookupError as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            return {"error": f"could not undo: {str(exc)[:120]}"}
+
+    def remove_all_tags(self, file: str) -> dict:
+        """Strip the whole tag structure (start over in Acrobat)."""
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
+        try:
+            return service.remove_all_tags(pdf, self._config_path)
+        except Exception as exc:
+            return {"error": f"could not remove the tags: {str(exc)[:120]}"}
+
     def reprocess(self, file: str) -> dict:
         """Undo every edit by re-running the original inbox document."""
         try:

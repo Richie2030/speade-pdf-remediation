@@ -45,7 +45,11 @@
       <div id="detail-body" hidden>
         <div class="detail-head">
           <h2 id="doc-name"></h2>
-          <button id="revert" hidden>Undo all edits (reprocess)</button>
+          <div class="head-actions">
+            <button id="undo-last" hidden>Undo last change</button>
+            <button id="remove-tags" title="Delete the whole tag structure so the document can be tagged from scratch in Acrobat">Remove all tags</button>
+            <button id="revert" hidden>Undo all edits (reprocess)</button>
+          </div>
         </div>
 
         <div id="edited-banner" hidden>
@@ -84,6 +88,16 @@
             <input id="figure-alt" type="text"
                    placeholder="What the image shows and why it matters">
             <button id="save-alt">Save description</button>
+          </div>
+          <div class="editor-row">
+            <label>Reading order</label>
+            <button id="move-earlier">&uarr; Move earlier</button>
+            <button id="move-later">&darr; Move later</button>
+          </div>
+          <div class="editor-row">
+            <label>Remove</label>
+            <button id="unwrap-tag" title="Delete this tag but keep what is inside it in the reading order, for a wrapper that should not be there">Remove tag, keep contents</button>
+            <button id="make-decorative" title="Take it out of the reading order and mark the content as decoration, so it needs no description">Mark as decorative</button>
           </div>
           <div id="editor-result" class="muted"></div>
         </div>

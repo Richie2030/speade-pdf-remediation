@@ -14,9 +14,10 @@ which is exactly what the JS bridge will need.
 
 from __future__ import annotations
 
+import shutil
 import sys
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -83,6 +84,7 @@ class QueueItem(BaseModel):
     # stage that RAN, including ones that skipped themselves -- the UI needs the
     # honest "text was recognised" signal, not the itinerary)
     ocr_layered: bool = False
+    undo_depth: int = 0  # single-step undos available (see undo_last_edit)
 
 
 def _hide_dir(path: Path) -> None:
@@ -292,6 +294,7 @@ def list_queue(config_path: Path = DEFAULT_CONFIG_PATH) -> list[QueueItem]:
                 reviewer=sidecar.approval.reviewer,
                 output_changed=changed,
                 ocr_layered=sidecar.ocr_layered,
+                undo_depth=len(_undo_snapshots(ws, pdf_name)),
             )
         )
     return items
@@ -404,6 +407,89 @@ EDITABLE_TAG_TYPES = (
 )
 
 
+# How many single-step undos are kept per document. Snapshots are whole PDFs,
+# so this is a memory-of-disk tradeoff: deep enough for a real editing session,
+# bounded so a big batch cannot fill a lab PC.
+_UNDO_DEPTH = 20
+
+
+def _undo_dir(ws: Workspace) -> Path:
+    """Where per-document edit snapshots live (inside the hidden sidecar area,
+    so reviewers browsing data/ are not tempted to poke at them)."""
+    return ws.sidecars / ".undo"
+
+
+def _undo_snapshots(ws: Workspace, name: str) -> list[Path]:
+    """This document's snapshots, oldest first."""
+    folder = _undo_dir(ws)
+    if not folder.is_dir():
+        return []
+    return sorted(folder.glob(f"{name}.*.bak"), key=lambda p: int(p.suffixes[-2].lstrip(".")))
+
+
+def undo_depth(name: str, config_path: Path = DEFAULT_CONFIG_PATH) -> int:
+    """How many single-step undos are available for this document."""
+    return len(_undo_snapshots(workspace(config_path), Path(name).name))
+
+
+def _snapshot(ws: Workspace, pdf: Path) -> Path | None:
+    """Copy the document aside so the edit about to happen can be undone one
+    step. Returns the snapshot path, or None if it could not be written --
+    failure to snapshot must not block the edit itself."""
+    folder = _undo_dir(ws)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        existing = _undo_snapshots(ws, pdf.name)
+        for stale in existing[: max(0, len(existing) + 1 - _UNDO_DEPTH)]:
+            stale.unlink(missing_ok=True)
+        nxt = 1 + max((int(p.suffixes[-2].lstrip(".")) for p in existing), default=0)
+        target = folder / f"{pdf.name}.{nxt}.bak"
+        shutil.copy2(pdf, target)
+        return target
+    except OSError:
+        return None
+
+
+@contextmanager
+def _edit_guard(ws: Workspace, pdf: Path):
+    """Snapshot for undo, and DISCARD that snapshot if the edit fails -- a
+    refused edit must not leave a no-op step in the undo history."""
+    snapshot = _snapshot(ws, pdf)
+    try:
+        yield
+    except BaseException:
+        if snapshot is not None:
+            with suppress(OSError):
+                snapshot.unlink(missing_ok=True)
+        raise
+
+
+def clear_undo(ws: Workspace, name: str) -> None:
+    """Drop a document's snapshots -- after a reprocess or a decision the older
+    versions are no longer meaningful history to step back through."""
+    for snapshot in _undo_snapshots(ws, Path(name).name):
+        with suppress(OSError):
+            snapshot.unlink(missing_ok=True)
+
+
+def undo_last_edit(pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
+    """Restore the document to the state before the most recent edit (one step).
+    Raises LookupError when there is nothing left to undo."""
+    ws = workspace(config_path)
+    snapshots = _undo_snapshots(ws, pdf.name)
+    if not snapshots:
+        raise LookupError("nothing to undo for this document")
+    latest = snapshots[-1]
+    tmp = pdf.with_name(pdf.name + ".undoing")
+    shutil.copy2(latest, tmp)
+    tmp.replace(pdf)
+    with suppress(OSError):
+        latest.unlink(missing_ok=True)
+    result = _after_edit(ws, pdf, {"event": "edit-undo"})
+    result["undo_depth"] = len(_undo_snapshots(ws, pdf.name))
+    return result
+
+
 def _after_edit(ws: Workspace, pdf: Path, event: dict[str, Any]) -> dict[str, Any]:
     """Shared tail for every in-app edit: re-score the changed document so the
     reviewer sees the effect immediately, persist that verdict, and record the
@@ -445,7 +531,8 @@ def set_tag_type(
     def mutate(element, pikepdf) -> None:
         element.S = pikepdf.Name("/" + new_type)
 
-    old_type = structure.edit_element(pdf, node_id, mutate)
+    with _edit_guard(ws, pdf):
+        old_type = structure.edit_element(pdf, node_id, mutate)
     return _after_edit(
         ws, pdf, {"event": "edit-tag", "node": node_id, "from": old_type, "to": new_type}
     )
@@ -465,11 +552,88 @@ def set_figure_alt(
         elif "/Alt" in element:
             del element.Alt
 
-    kind = structure.edit_element(pdf, node_id, mutate)
+    with _edit_guard(ws, pdf):
+        kind = structure.edit_element(pdf, node_id, mutate)
     return _after_edit(
         ws,
         pdf,
         {"event": "edit-alt", "node": node_id, "tag": kind, "described": bool(text)},
+    )
+
+
+def make_decorative(
+    pdf: Path, node_id: int, config_path: Path = DEFAULT_CONFIG_PATH
+) -> dict[str, Any]:
+    """Mark one element as decoration: out of the reading order, its content
+    re-marked as an artifact. This is the "decorative image needs no
+    description" answer -- and why /Artifact is not in EDITABLE_TAG_TYPES, since
+    it is a removal, not a retag."""
+    ws = workspace(config_path)
+    with _edit_guard(ws, pdf):
+        result = structure.make_decorative(pdf, node_id)
+    return _after_edit(
+        ws,
+        pdf,
+        {
+            "event": "edit-decorative",
+            "node": node_id,
+            "was": result["was"],
+            "artifacts": result["artifacts"],
+        },
+    )
+
+
+def move_tag(
+    pdf: Path, node_id: int, delta: int, config_path: Path = DEFAULT_CONFIG_PATH
+) -> dict[str, Any]:
+    """Move one tag earlier/later among its siblings. Reading order is tree
+    order, so this is the in-app reading-order fix."""
+    if delta not in (-1, 1):
+        raise ValueError("delta must be -1 (earlier) or +1 (later)")
+    ws = workspace(config_path)
+    with _edit_guard(ws, pdf):
+        result = structure.move_element(pdf, node_id, delta)
+    if not result["moved"]:
+        # nothing changed: drop the snapshot so "undo" never becomes a no-op
+        snapshots = _undo_snapshots(ws, pdf.name)
+        if snapshots:
+            with suppress(OSError):
+                snapshots[-1].unlink(missing_ok=True)
+        return {"ok": True, "moved": False, "note": "already at the end of its group"}
+    return _after_edit(
+        ws,
+        pdf,
+        {"event": "edit-order", "node": node_id, "direction": "earlier" if delta < 0 else "later"},
+    )
+
+
+def remove_all_tags(pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
+    """Strip the entire tag structure (the start-over escape hatch). The
+    document stays visually identical and can be reprocessed or tagged from
+    scratch in Acrobat."""
+    ws = workspace(config_path)
+    with _edit_guard(ws, pdf):
+        result = structure.remove_all_tags(pdf)
+    return _after_edit(ws, pdf, {"event": "edit-remove-tags", "had_tags": result["had_tags"]})
+
+
+def unwrap_tag(pdf: Path, node_id: int, config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
+    """Remove one tag but KEEP its contents in the reading order -- the fix for a
+    wrapper the engine invented (paragraphs bundled into a bogus List). Raises
+    ValueError when the element holds content directly, since deleting that tag
+    would leave the content untagged (retag or mark decorative instead)."""
+    ws = workspace(config_path)
+    with _edit_guard(ws, pdf):
+        result = structure.unwrap_element(pdf, node_id)
+    return _after_edit(
+        ws,
+        pdf,
+        {
+            "event": "edit-unwrap",
+            "node": node_id,
+            "was": result["was"],
+            "promoted": result["promoted"],
+        },
     )
 
 
@@ -485,6 +649,7 @@ def reprocess(name: str, config_path: Path = DEFAULT_CONFIG_PATH) -> Sidecar:
     for folder in (ws.outbox / "approved", ws.outbox / "rejected"):
         with suppress(OSError):
             (folder / src.name).unlink(missing_ok=True)
+    clear_undo(ws, src.name)  # the old step-by-step history no longer applies
     stages = [registry.get_stage(impl) for impl in ws.stages.values()]
     sidecar = runner.run(src, stages, ws.outbox, ws.audit_log, sidecar_dir=ws.sidecars)
     return _score_draft(ws, sidecar)
@@ -531,6 +696,7 @@ def decide(
     sidecar.verapdf_failed_clauses = vera.failed_clauses
 
     status = ApprovalStatus.APPROVED if approve else ApprovalStatus.REJECTED
+    clear_undo(ws, pdf.name)  # the decision closes this editing session
     sidecar.approval = Approval(status=status, reviewer=reviewer, decided_at=datetime.now(UTC))
     side_path.write_text(sidecar.model_dump_json(indent=2), encoding="utf-8", newline="\n")
 
