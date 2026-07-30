@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,7 @@ from speade.audit.log import append_event, read_events, sha256_file
 from speade.config import load_config
 from speade.pipeline import registry, runner
 from speade.pipeline.contract import Approval, ApprovalStatus, Sidecar
-from speade.validation import verapdf
+from speade.validation import structure, verapdf
 from speade.validation.structure import (
     StructureSummary,
     StructureTree,
@@ -374,6 +375,119 @@ def structure_tree(pdf: Path) -> StructureTree:
     """The full tag tree with page geometry (see validation.structure): the
     in-app tags panel with Acrobat-style highlight boxes."""
     return _structure_tree(pdf)
+
+
+# The tag types a reviewer may assign in-app. Deliberately the everyday set:
+# structural containers (Part/Sect/Art) and table internals are left to
+# Acrobat, where the surrounding structure can be seen and repaired properly.
+EDITABLE_TAG_TYPES = (
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+    "H5",
+    "H6",
+    "P",
+    "L",
+    "LI",
+    "Lbl",
+    "LBody",
+    "Caption",
+    "Figure",
+    "Table",
+    "TR",
+    "TH",
+    "TD",
+    "BlockQuote",
+    "Note",
+    "Span",
+)
+
+
+def _after_edit(ws: Workspace, pdf: Path, event: dict[str, Any]) -> dict[str, Any]:
+    """Shared tail for every in-app edit: re-score the changed document so the
+    reviewer sees the effect immediately, persist that verdict, and record the
+    edit in the audit trail. `output_sha256` is deliberately NOT updated -- the
+    document now differs from what the pipeline produced ("edited since
+    processing"), and the approval step is what re-pins the shipped bytes."""
+    side_path = ws.sidecars / (pdf.name + ".sidecar.json")
+    vera = verapdf.validate(pdf, ws.verapdf_profile, cli=ws.verapdf_cli)
+    if side_path.is_file():
+        sidecar = Sidecar.model_validate_json(side_path.read_text(encoding="utf-8"))
+        sidecar.verapdf_passed = vera.passed
+        sidecar.verapdf_failed_clauses = vera.failed_clauses
+        side_path.write_text(sidecar.model_dump_json(), encoding="utf-8")
+    append_event(
+        ws.audit_log,
+        {
+            "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+            "file": pdf.name,
+            **event,
+        },
+    )
+    return {
+        "ok": True,
+        "verapdf_passed": vera.passed,
+        "failed_clauses": vera.failed_clauses,
+        **event,
+    }
+
+
+def set_tag_type(
+    pdf: Path, node_id: int, new_type: str, config_path: Path = DEFAULT_CONFIG_PATH
+) -> dict[str, Any]:
+    """Retag one element (e.g. a Paragraph the engine should have made a
+    Heading 2). Raises ValueError for a type outside EDITABLE_TAG_TYPES."""
+    if new_type not in EDITABLE_TAG_TYPES:
+        raise ValueError(f"not an editable tag type: {new_type}")
+    ws = workspace(config_path)
+
+    def mutate(element, pikepdf) -> None:
+        element.S = pikepdf.Name("/" + new_type)
+
+    old_type = structure.edit_element(pdf, node_id, mutate)
+    return _after_edit(
+        ws, pdf, {"event": "edit-tag", "node": node_id, "from": old_type, "to": new_type}
+    )
+
+
+def set_figure_alt(
+    pdf: Path, node_id: int, alt: str, config_path: Path = DEFAULT_CONFIG_PATH
+) -> dict[str, Any]:
+    """Write the human-authored description (/Alt) onto one element -- the
+    alt-text step that is never machine-generated. An empty string clears it."""
+    ws = workspace(config_path)
+    text = alt.strip()
+
+    def mutate(element, pikepdf) -> None:
+        if text:
+            element.Alt = pikepdf.String(text)
+        elif "/Alt" in element:
+            del element.Alt
+
+    kind = structure.edit_element(pdf, node_id, mutate)
+    return _after_edit(
+        ws,
+        pdf,
+        {"event": "edit-alt", "node": node_id, "tag": kind, "described": bool(text)},
+    )
+
+
+def reprocess(name: str, config_path: Path = DEFAULT_CONFIG_PATH) -> Sidecar:
+    """Discard in-app/Acrobat edits by running the ORIGINAL inbox document
+    through the pipeline again -- the undo for the whole editing session.
+    Raises FileNotFoundError when the source is no longer in the inbox."""
+    ws = workspace(config_path)
+    src = ws.inbox / Path(name).name
+    if not src.is_file():
+        raise FileNotFoundError(f"original not in the inbox: {src.name}")
+    # a decided copy would otherwise shadow the fresh draft in find_output()
+    for folder in (ws.outbox / "approved", ws.outbox / "rejected"):
+        with suppress(OSError):
+            (folder / src.name).unlink(missing_ok=True)
+    stages = [registry.get_stage(impl) for impl in ws.stages.values()]
+    sidecar = runner.run(src, stages, ws.outbox, ws.audit_log, sidecar_dir=ws.sidecars)
+    return _score_draft(ws, sidecar)
 
 
 def audit_events(config_path: Path = DEFAULT_CONFIG_PATH, limit: int = 200) -> list[dict[str, Any]]:

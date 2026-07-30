@@ -301,6 +301,93 @@ def test_decide_refingerprints_the_bytes_being_approved(tmp_path, monkeypatch):
     assert events[-1]["output_sha256"] == sidecar.output_sha256
 
 
+def _tagged_source(tmp_path, name="doc.pdf"):
+    """A minimal tagged PDF in the inbox: Document > P(with content) + Figure."""
+    pikepdf = pytest.importorskip("pikepdf", reason="needs --extra tag")
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(612, 792))
+    page.Resources = pikepdf.Dictionary(
+        Font=pikepdf.Dictionary(
+            F1=pikepdf.Dictionary(
+                Type=pikepdf.Name.Font,
+                Subtype=pikepdf.Name.Type1,
+                BaseFont=pikepdf.Name.Helvetica,
+            )
+        )
+    )
+    page.Contents = pdf.make_stream(
+        b"/P <</MCID 0>> BDC BT /F1 24 Tf 72 700 Td (Chapter One) Tj ET EMC"
+    )
+    para = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name.P, K=0, Pg=page.obj))
+    figure = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/Figure"), Pg=page.obj))
+    doc_elem = pdf.make_indirect(
+        pikepdf.Dictionary(S=pikepdf.Name("/Document"), K=pikepdf.Array([para, figure]))
+    )
+    pdf.Root.StructTreeRoot = pdf.make_indirect(
+        pikepdf.Dictionary(Type=pikepdf.Name.StructTreeRoot, K=doc_elem)
+    )
+    out = tmp_path / "inbox" / name
+    pdf.save(out)
+    return out
+
+
+def test_set_tag_type_retags_rescores_and_audits(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    config = _write_config(tmp_path)
+    _tagged_source(tmp_path)
+    service.run_batch(None, config)
+    out = tmp_path / "outbox" / "doc.pdf"
+    tree = service.structure_tree(out)
+    para = tree.root[0].kids[0]
+
+    result = service.set_tag_type(out, para.id, "H2", config)
+
+    assert result["ok"] and result["from"] == "P" and result["to"] == "H2"
+    assert service.structure_tree(out).root[0].kids[0].type == "H2"
+    # the edit is in the trust trail, and the document now reads as edited
+    events = service.audit_events(config)
+    assert events[0]["event"] == "edit-tag" and events[0]["file"] == "doc.pdf"
+    assert service.list_queue(config)[0].output_changed is True
+
+    with pytest.raises(ValueError, match="not an editable tag type"):
+        service.set_tag_type(out, para.id, "Artifact", config)
+
+
+def test_set_figure_alt_writes_and_clears_the_description(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    config = _write_config(tmp_path)
+    _tagged_source(tmp_path)
+    service.run_batch(None, config)
+    out = tmp_path / "outbox" / "doc.pdf"
+    figure = service.structure_tree(out).root[0].kids[1]
+
+    service.set_figure_alt(out, figure.id, "  a bar chart of pass rates  ", config)
+    assert service.structure_tree(out).root[0].kids[1].alt == "a bar chart of pass rates"
+
+    service.set_figure_alt(out, figure.id, "", config)
+    assert service.structure_tree(out).root[0].kids[1].alt is None
+    assert service.audit_events(config)[0]["event"] == "edit-alt"
+
+
+def test_reprocess_undoes_edits_from_the_original(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    config = _write_config(tmp_path)
+    _tagged_source(tmp_path)
+    service.run_batch(None, config)
+    out = tmp_path / "outbox" / "doc.pdf"
+    para = service.structure_tree(out).root[0].kids[0]
+    service.set_tag_type(out, para.id, "H2", config)
+    assert service.list_queue(config)[0].output_changed is True
+
+    service.reprocess("doc.pdf", config)
+
+    assert service.structure_tree(out).root[0].kids[0].type == "P"  # edit undone
+    assert service.list_queue(config)[0].output_changed is False  # matches again
+
+    with pytest.raises(FileNotFoundError):
+        service.reprocess("nope.pdf", config)
+
+
 def test_decide_requires_a_sidecar(tmp_path):
     config = _write_config(tmp_path)
     (tmp_path / "outbox").mkdir()

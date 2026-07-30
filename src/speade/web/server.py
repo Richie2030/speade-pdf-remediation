@@ -45,6 +45,18 @@ class FileBody(BaseModel):
     file: str
 
 
+class TagTypeBody(BaseModel):
+    file: str
+    node_id: int
+    new_type: str
+
+
+class AltBody(BaseModel):
+    file: str
+    node_id: int
+    alt: str = ""
+
+
 def create_app(config_path: Path | None = None) -> FastAPI:
     cfg = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
     bridge = SpeadeApi(cfg)  # headless: no window; uploads replace the native dialog
@@ -127,6 +139,22 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     @app.post("/api/metadata")
     def set_metadata(body: MetadataBody) -> dict:
         return bridge.set_doc_metadata(body.file, body.title, body.lang)
+
+    @app.get("/api/tag_types")
+    def tag_types() -> list[str]:
+        return bridge.tag_types()
+
+    @app.post("/api/tag_type")
+    def set_tag_type(body: TagTypeBody) -> dict:
+        return bridge.set_tag_type(body.file, body.node_id, body.new_type)
+
+    @app.post("/api/figure_alt")
+    def set_figure_alt(body: AltBody) -> dict:
+        return bridge.set_figure_alt(body.file, body.node_id, body.alt)
+
+    @app.post("/api/reprocess")
+    def reprocess(body: FileBody) -> dict:
+        return bridge.reprocess(body.file)
 
     @app.post("/api/upload")
     async def upload(files: list[UploadFile]) -> dict:

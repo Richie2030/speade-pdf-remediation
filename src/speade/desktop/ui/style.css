@@ -184,6 +184,30 @@ main { flex: 1; display: flex; min-height: 0; }
 #doc-lang-other { width: 160px; }
 #meta-result { flex-basis: 100%; font-size: 15px; }
 
+/* ----------------------------------------------------- edited + editor */
+#edited-banner {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+  margin: 10px 0 2px; padding: 10px 14px; font-size: 15px;
+  background: #fff4d6; border-left: 6px solid var(--ucc-yellow); border-radius: 6px;
+}
+#edited-banner span { color: #6d5307; }
+.chip.edited { background: var(--ucc-yellow); color: #4a3400; }
+#revert { min-height: 36px; padding: 4px 12px; font-size: 14px; }
+
+#tag-editor {
+  margin-top: 12px; padding: 12px 14px; background: #fff;
+  border: 2px solid var(--line); border-radius: 8px;
+}
+.editor-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.editor-row label { font-size: 15px; font-weight: 600; }
+#tag-editor select, #tag-editor input {
+  font: inherit; font-size: 16px; padding: 6px 10px; min-height: 40px;
+  border: 2px solid var(--ucc-navy); border-radius: 8px; background: #fff;
+}
+#figure-alt { flex: 1; min-width: 260px; }
+#tag-editor button { min-height: 40px; padding: 6px 14px; font-size: 15px; }
+#editor-result { font-size: 14px; }
+
 /* ---------------------------------------------------------------- help */
 #help-overlay {
   position: fixed; inset: 0; z-index: 50; background: rgba(0, 27, 46, .55);

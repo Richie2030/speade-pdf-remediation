@@ -53,6 +53,12 @@ const api = {
   runBatchCancel: () => postJSON("/api/run_batch_cancel"),
   structure: (file) => getJSON("/api/structure?file=" + encodeURIComponent(file)),
   structureTree: (file) => getJSON("/api/structure_tree?file=" + encodeURIComponent(file)),
+  tagTypes: () => getJSON("/api/tag_types"),
+  setTagType: (file, nodeId, newType) =>
+    postJSON("/api/tag_type", { file, node_id: nodeId, new_type: newType }),
+  setFigureAlt: (file, nodeId, alt) =>
+    postJSON("/api/figure_alt", { file, node_id: nodeId, alt }),
+  reprocess: (file) => postJSON("/api/reprocess", { file }),
   pageImage: (file, index) =>
     getJSON(
       "/api/page_image?file=" + encodeURIComponent(file) + "&index=" + (index || 0)

@@ -79,6 +79,81 @@ def test_structure_tree_has_geometry_and_text(tmp_path):
     assert doc_node.box == p.box
 
 
+def _tagged_pdf(tmp_path, name="edit.pdf"):
+    """A real tagged page: Document > (H1 with content, Figure)."""
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(612, 792))
+    page.Resources = pikepdf.Dictionary(
+        Font=pikepdf.Dictionary(
+            F1=pikepdf.Dictionary(
+                Type=pikepdf.Name.Font,
+                Subtype=pikepdf.Name.Type1,
+                BaseFont=pikepdf.Name.Helvetica,
+            )
+        )
+    )
+    page.Contents = pdf.make_stream(
+        b"/P <</MCID 0>> BDC BT /F1 24 Tf 72 700 Td (A heading) Tj ET EMC"
+    )
+    heading = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name.P, K=0, Pg=page.obj))
+    figure = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/Figure"), Pg=page.obj))
+    doc_elem = pdf.make_indirect(
+        pikepdf.Dictionary(S=pikepdf.Name("/Document"), K=pikepdf.Array([heading, figure]))
+    )
+    pdf.Root.StructTreeRoot = pdf.make_indirect(
+        pikepdf.Dictionary(Type=pikepdf.Name.StructTreeRoot, K=doc_elem)
+    )
+    out = tmp_path / name
+    pdf.save(out)
+    return out
+
+
+def test_element_ids_match_the_tree(tmp_path):
+    # THE editing invariant: a StructureNode.id addresses the same element in
+    # _walk_elements. If the two traversals ever drift, edits land on the wrong
+    # tag -- so pin the pairing (types in pre-order must agree).
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import _walk_elements, structure_tree
+
+    out = _tagged_pdf(tmp_path)
+    tree = structure_tree(out)
+    flat = []
+
+    def walk(nodes):
+        for n in nodes:
+            flat.append(n)
+            walk(n.kids)
+
+    walk(tree.root)
+
+    with pikepdf.open(out) as doc:
+        elements = list(_walk_elements(doc, pikepdf))
+        assert [i for i, _ in elements] == [n.id for n in flat]
+        assert [str(e.get("/S")).lstrip("/") for _, e in elements] == [n.type for n in flat]
+
+
+def test_edit_element_retags_and_writes_alt(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import edit_element, structure_tree
+
+    out = _tagged_pdf(tmp_path)
+    tree = structure_tree(out)
+    heading = tree.root[0].kids[0]  # the /P that should be a heading
+    figure = tree.root[0].kids[1]
+
+    old = edit_element(out, heading.id, lambda el, pk: el.__setattr__("S", pk.Name("/H2")))
+    assert old == "P"
+    edit_element(out, figure.id, lambda el, pk: el.__setattr__("Alt", pk.String("a chart")))
+
+    after = structure_tree(out)
+    assert after.root[0].kids[0].type == "H2"
+    assert after.root[0].kids[1].alt == "a chart"
+
+    with pytest.raises(LookupError):
+        edit_element(out, 999, lambda el, pk: None)
+    assert not list(tmp_path.glob("*.editing"))  # no temp file left behind
+
+
 def test_structure_tree_untagged_pdf(tmp_path):
     pytest.importorskip("pypdfium2", reason="needs --extra ocr")
     from speade.validation.structure import structure_tree

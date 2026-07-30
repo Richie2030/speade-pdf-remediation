@@ -12,6 +12,8 @@ let structTree = null; // the fetched tree for `selected`
 let structSelectedRow = null; // the highlighted .tnode element
 let pageObserver = null; // lazy-loads page images as bands scroll into view
 let showLinks = false; // inline links hidden by default (see isHiddenLink)
+let selectedNode = null; // the tag currently open in the editor
+let tagTypes = []; // assignable tag types, from the backend
 
 // ------------------------------------------------- plain-language dictionaries
 const STATUS_TEXT = {
@@ -92,6 +94,7 @@ function renderQueue() {
       `<div class="name">${item.file}</div>` +
       `<div class="sub">${chip(STATUS_TEXT[item.status] || item.status, item.status)} ` +
       `${veraChip(item)}` +
+      (item.output_changed === true ? ` ${chip("edited", "edited")}` : "") +
       (item.flags.length ? ` ${chip(item.flags.length + " note(s)", "flag")}` : "") +
       `</div>`;
     div.onclick = () => select(item.file);
@@ -150,21 +153,31 @@ function processedText(item) {
 
 // Plain language for the veraPDF clause families a reviewer will actually meet;
 // the raw codes stay visible in brackets for the Acrobat/IT conversation.
+// Longest prefix wins, so specific sub-clauses beat their family. Codes are
+// clause + test number from ISO 14289-1; docs/verapdf-clauses.md has all 106.
 const CLAUSE_TEXT = [
+  ["7.18.5", "links not properly tagged"],
+  ["7.18.6", "form fields need labels"],
+  ["7.18", "annotations (links, comments, forms) need attention"],
   ["7.21", "fonts not embedded properly"],
-  ["7.18", "form fields need attention"],
+  ["7.9", "footnotes need unique IDs"],
+  ["7.7", "formulas missing descriptions"],
+  ["7.5", "table headers need attention"],
+  ["7.4", "heading levels are wrong (skipped or mixed)"],
   ["7.3", "images missing descriptions"],
-  ["7.2", "language settings"],
-  ["7.1", "document title/settings"],
-  ["6.2", "some content is not tagged"],
-  ["5.", "tagging declaration"],
+  ["7.2", "language, table, list or contents structure"],
+  ["7.1", "tagging fundamentals or document title"],
+  ["6.2", "not declared as a tagged PDF"],
+  ["6.1", "PDF file format problem"],
+  ["5", "PDF/UA declaration missing"],
 ];
 
 function veraIssuesText(clauses) {
   const labels = [];
   for (const clause of clauses) {
-    const hit = CLAUSE_TEXT.find(([prefix]) => clause.startsWith(prefix));
-    const label = hit ? hit[1] : `rule ${clause}`;
+    const hits = CLAUSE_TEXT.filter(([prefix]) => clause.startsWith(prefix));
+    hits.sort((a, b) => b[0].length - a[0].length); // most specific match wins
+    const label = hits.length ? hits[0][1] : `rule ${clause}`;
     if (!labels.includes(label)) labels.push(label);
   }
   return labels.join("; ");
@@ -210,19 +223,17 @@ async function renderDetail() {
           : issueText
     }</dd>` +
     `<dt>Structure</dt><dd id="structure-fact">checking&hellip;</dd>` +
-    `<dt>File check</dt><dd>${
-      item.output_changed === true
-        ? "Edited since processing (Acrobat fixes are fine), it is checked again when you decide"
-        : item.output_changed === false
-          ? "Unchanged since the app processed it"
-          : "-"
-    }</dd>` +
     `<dt>Status</dt><dd>${STATUS_TEXT[item.status] || item.status}${
       item.reviewer ? " by " + item.reviewer : ""
     }</dd>`;
   $("doc-flags").innerHTML = item.flags
     .map((f) => chip(flagText(f), "flag"))
     .join(" ");
+
+  // "has this file changed since the app made it" -- a banner the reviewer
+  // cannot miss (the old one-line fact row was too quiet), plus the queue chip.
+  $("edited-banner").hidden = item.output_changed !== true;
+  $("revert").hidden = item.output_changed !== true;
 
   // structure summary arrives async; guard against a stale selection.
   api.structure(item.file).then((s) => {
@@ -281,6 +292,8 @@ async function loadStructure(file, retrying = false) {
   $("tag-tree").innerHTML = '<div class="muted">Reading the tag structure…</div>';
   $("page-stack").innerHTML = "";
   $("structure-note").hidden = true;
+  $("tag-editor").hidden = true; // nothing selected in the new document yet
+  selectedNode = null;
   const tree = await api.structureTree(file);
   if (selected !== file) return; // user moved on while we fetched
   structTree = tree;
@@ -479,7 +492,94 @@ function renderTree() {
   }
 }
 
+// ------------------------------------------------------------ tag editing
+// The two corrections that used to force an Acrobat trip: retagging (a heading
+// the engine called a paragraph) and writing an image description. Both write
+// straight into the PDF, so the document then reads "edited since processing".
+function showEditor(node) {
+  selectedNode = node;
+  $("tag-editor").hidden = false;
+  $("editor-result").textContent = "";
+  const preview = node.text ? ` - "${node.text.slice(0, 60)}"` : "";
+  $("editor-what").textContent = `Selected: ${typeText(node.type)}${preview}`;
+  const select = $("tag-type");
+  if (!select.options.length) {
+    for (const t of tagTypes) {
+      const opt = document.createElement("option");
+      opt.value = t;
+      opt.textContent = `${typeText(t)} (${t})`;
+      select.appendChild(opt);
+    }
+  }
+  select.value = tagTypes.includes(node.type) ? node.type : "";
+  $("figure-alt").value = node.alt || "";
+  // a description belongs on pictures; offer it there (and on anything that
+  // already carries one) rather than on every paragraph.
+  $("alt-row").hidden = !(node.type === "Figure" || node.type === "Formula" || node.alt);
+}
+
+async function afterEdit(result, message) {
+  if (result.error) {
+    $("editor-result").textContent = result.error;
+    return;
+  }
+  const verdict = result.verapdf_passed
+    ? "automatic check now passes"
+    : `automatic check: ${(result.failed_clauses || []).length} issue(s) left`;
+  $("editor-result").textContent = `${message} - ${verdict}.`;
+  const file = selected;
+  const nodeId = selectedNode ? selectedNode.id : null;
+  await refresh(); // re-reads the queue: the "edited" chip + banner appear
+  if (selected === file) {
+    await loadStructure(file); // rebuild the tree from the changed PDF
+    const again = findNodeById(structTree && structTree.root, nodeId);
+    if (again) selectNode(again, { scrollTree: true });
+  }
+}
+
+function findNodeById(nodes, id) {
+  for (const node of nodes || []) {
+    if (node.id === id) return node;
+    const hit = findNodeById(node.kids, id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+async function saveTagType() {
+  if (!selectedNode) return;
+  const newType = $("tag-type").value;
+  if (!newType || newType === selectedNode.type) return;
+  $("save-tag-type").disabled = true;
+  $("editor-result").textContent = "Saving…";
+  const result = await api.setTagType(selected, selectedNode.id, newType);
+  $("save-tag-type").disabled = false;
+  await afterEdit(result, `Changed to ${typeText(newType)}`);
+}
+
+async function saveAlt() {
+  if (!selectedNode) return;
+  $("save-alt").disabled = true;
+  $("editor-result").textContent = "Saving…";
+  const result = await api.setFigureAlt(selected, selectedNode.id, $("figure-alt").value);
+  $("save-alt").disabled = false;
+  await afterEdit(result, $("figure-alt").value.trim() ? "Description saved" : "Description cleared");
+}
+
+async function revertDocument() {
+  if (!selected) return;
+  const file = selected;
+  $("revert").disabled = true;
+  setStatus("Undoing all edits: reprocessing the original document…");
+  const result = await api.reprocess(file);
+  $("revert").disabled = false;
+  setStatus(result.error ? result.error : "Reprocessed from the original document.");
+  await refresh();
+  if (selected === file) await loadStructure(file);
+}
+
 function selectNode(node, opts = {}) {
+  showEditor(node);
   if (structSelectedRow) structSelectedRow.classList.remove("selected");
   structSelectedRow = node.__row || null;
   if (structSelectedRow) {
@@ -698,6 +798,10 @@ async function init() {
       renderPageStack(selected);
     }
   };
+  $("save-tag-type").onclick = saveTagType;
+  $("save-alt").onclick = saveAlt;
+  $("revert").onclick = revertDocument;
+  tagTypes = await api.tagTypes();
   $("help").onclick = () => ($("help-overlay").hidden = false);
   $("help-close").onclick = () => ($("help-overlay").hidden = true);
   $("help-overlay").onclick = (e) => {

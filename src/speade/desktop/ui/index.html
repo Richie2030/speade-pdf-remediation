@@ -45,6 +45,13 @@
       <div id="detail-body" hidden>
         <div class="detail-head">
           <h2 id="doc-name"></h2>
+          <button id="revert" hidden>Undo all edits (reprocess)</button>
+        </div>
+
+        <div id="edited-banner" hidden>
+          <b>Edited since the app processed it.</b>
+          <span>Your changes (in this app or in Acrobat) are in the file.
+            Approving records this edited version.</span>
         </div>
 
         <dl id="facts"></dl>
@@ -61,6 +68,24 @@
             <div id="page-stack"></div>
             <div id="structure-note" class="muted" hidden></div>
           </div>
+        </div>
+
+        <div id="tag-editor" hidden>
+          <div class="editor-row">
+            <span id="editor-what" class="muted"></span>
+          </div>
+          <div class="editor-row">
+            <label for="tag-type">Tag type</label>
+            <select id="tag-type"></select>
+            <button id="save-tag-type">Change tag</button>
+          </div>
+          <div class="editor-row" id="alt-row">
+            <label for="figure-alt">Image description</label>
+            <input id="figure-alt" type="text"
+                   placeholder="What the image shows and why it matters">
+            <button id="save-alt">Save description</button>
+          </div>
+          <div id="editor-result" class="muted"></div>
         </div>
 
         <div class="gate" id="meta-box">

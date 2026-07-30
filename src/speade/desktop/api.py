@@ -230,6 +230,44 @@ class SpeadeApi:
         except Exception as exc:
             return {"error": f"could not save: {str(exc)[:120]}"}
 
+    def tag_types(self) -> list[str]:
+        """The tag types a reviewer may assign in-app (the editor dropdown)."""
+        return list(service.EDITABLE_TAG_TYPES)
+
+    def set_tag_type(self, file: str, node_id: int, new_type: str) -> dict:
+        """Retag one element -- e.g. promote a Paragraph to Heading 2."""
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
+        try:
+            return service.set_tag_type(pdf, int(node_id), new_type, self._config_path)
+        except (ValueError, LookupError) as exc:
+            return {"error": str(exc)}
+        except Exception as exc:  # a broken file must not kill the UI
+            return {"error": f"could not change the tag: {str(exc)[:120]}"}
+
+    def set_figure_alt(self, file: str, node_id: int, alt: str) -> dict:
+        """Save the human-authored image description (/Alt) onto one element."""
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
+        try:
+            return service.set_figure_alt(pdf, int(node_id), alt, self._config_path)
+        except LookupError as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            return {"error": f"could not save the description: {str(exc)[:120]}"}
+
+    def reprocess(self, file: str) -> dict:
+        """Undo every edit by re-running the original inbox document."""
+        try:
+            sidecar = service.reprocess(Path(file).name, self._config_path)
+            return {"ok": True, "verapdf_passed": sidecar.verapdf_passed}
+        except FileNotFoundError as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            return {"error": f"could not reprocess: {str(exc)[:120]}"}
+
     def decide(self, file: str, reviewer: str, approve: bool) -> dict:
         """The human gate: veraPDF verdict + the reviewer's decision (service.decide)."""
         pdf = self._resolve(file) or service.workspace(self._config_path).outbox / Path(file).name

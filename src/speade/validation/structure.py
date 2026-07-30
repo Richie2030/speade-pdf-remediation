@@ -100,6 +100,7 @@ class PageSize(BaseModel):
 class StructureNode(BaseModel):
     """One tag in the tree, with enough geometry to highlight it on the page."""
 
+    id: int = -1  # pre-order position; how an editor addresses this tag
     type: str  # structure type without the slash, e.g. "P", "H1", "Figure"
     alt: str | None = None  # /Alt if present (figures)
     page: int | None = None  # 0-based page its content sits on (first found)
@@ -115,6 +116,73 @@ class StructureTree(BaseModel):
     pages: list[PageSize] = Field(default_factory=list)
     root: list[StructureNode] = Field(default_factory=list)
     truncated: bool = False  # _MAX_NODES hit: the tree shown is a prefix
+
+
+def _is_element(node, pikepdf) -> bool:
+    """Is this /K entry a real structure element (a tree row), or content?"""
+    return (
+        isinstance(node, pikepdf.Dictionary)
+        and node.get("/Type") != pikepdf.Name("/MCR")
+        and node.get("/S") is not None
+    )
+
+
+def _walk_elements(doc, pikepdf):
+    """Yield (id, element dict) over an OPEN document in the SAME pre-order the
+    tree uses, so a `StructureNode.id` addresses the same element here.
+
+    These traversal rules MUST match `structure_tree`'s `walk`; the pairing is
+    pinned by tests/test_structure.py::test_element_ids_match_the_tree.
+    """
+    root = doc.Root.get("/StructTreeRoot")
+    if root is None:
+        return
+
+    def walk(node, state):
+        if isinstance(node, pikepdf.Array):
+            for kid in node:
+                yield from walk(kid, state)
+            return
+        if not _is_element(node, pikepdf):
+            return
+        if state["count"] >= _MAX_NODES:
+            return
+        node_id = state["count"]
+        state["count"] += 1
+        yield node_id, node
+        kids = node.get("/K")
+        if kids is None:
+            return
+        for kid in kids if isinstance(kids, pikepdf.Array) else [kids]:
+            yield from walk(kid, state)
+
+    yield from walk(root.get("/K"), {"count": 0})
+
+
+def edit_element(pdf: Path, node_id: int, mutate) -> str:
+    """Apply `mutate(element_dict, pikepdf)` to the tag addressed by `node_id`
+    and save the document in place. Returns the element's structure type as it
+    was BEFORE the mutation (so a retag can report what it replaced).
+
+    Writes via a temp file + atomic replace: a half-written PDF must never be
+    what a reviewer opens. Raises LookupError when the id is not in the tree.
+    """
+    import pikepdf
+
+    tmp = pdf.with_name(pdf.name + ".editing")
+    with pikepdf.open(pdf) as doc:
+        target = None
+        for eid, element in _walk_elements(doc, pikepdf):
+            if eid == node_id:
+                target = element
+                break
+        if target is None:
+            raise LookupError(f"no tag with id {node_id} in {pdf.name}")
+        was = str(target.get("/S")).lstrip("/")
+        mutate(target, pikepdf)
+        doc.save(tmp)
+    tmp.replace(pdf)
+    return was
 
 
 def _mcid_boxes(doc) -> list[dict[int, tuple[float, float, float, float]]]:
@@ -222,6 +290,9 @@ def _structure_tree_unlocked(pdf: Path, pikepdf, pdfium) -> StructureTree:
                 if state["count"] >= _MAX_NODES:
                     state["truncated"] = True
                     return []
+                # pre-order id: the editor addresses this element by it, so the
+                # rules here and in _walk_elements must stay identical.
+                node_id = state["count"]
                 state["count"] += 1
 
                 own_page = content_page(node, default_page)
@@ -273,6 +344,7 @@ def _structure_tree_unlocked(pdf: Path, pikepdf, pdfium) -> StructureTree:
                 alt = node.get("/Alt")
                 return [
                     StructureNode(
+                        id=node_id,
                         type=str(node.get("/S")).lstrip("/"),
                         alt=str(alt) if alt is not None else None,
                         page=node_page,
