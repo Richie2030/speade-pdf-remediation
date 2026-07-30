@@ -34,6 +34,8 @@ const api = {
   setFigureAlt: (file, nodeId, alt) => bridge("set_figure_alt", file, nodeId, alt),
   makeDecorative: (file, nodeId) => bridge("make_decorative", file, nodeId),
   moveTag: (file, nodeId, delta) => bridge("move_tag", file, nodeId, delta),
+  bulkEdit: (file, action, nodeIds, newType) =>
+    bridge("bulk_edit", file, action, nodeIds, newType || null),
   unwrapTag: (file, nodeId) => bridge("unwrap_tag", file, nodeId),
   undoLastEdit: (file) => bridge("undo_last_edit", file),
   removeAllTags: (file) => bridge("remove_all_tags", file),

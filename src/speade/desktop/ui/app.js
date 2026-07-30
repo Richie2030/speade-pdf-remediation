@@ -14,6 +14,8 @@ let pageObserver = null; // lazy-loads page images as bands scroll into view
 let showLinks = false; // inline links hidden by default (see isHiddenLink)
 let selectedNode = null; // the tag currently open in the editor
 let tagTypes = []; // assignable tag types, from the backend
+let boxesByPage = []; // leaf tags per page, for marquee hit-testing
+let bulkSelected = []; // tags captured by the last marquee drag
 
 // ------------------------------------------------- plain-language dictionaries
 const STATUS_TEXT = {
@@ -388,6 +390,7 @@ function nodeBox(node, size) {
   boxStyle(div, node.box, size);
   div.title = typeText(node.type) + (node.text ? ` - ${node.text}` : "");
   div.onclick = () => selectNode(node, { scrollTree: true });
+  node.__box = div; // the marquee highlights selections through this
   // Acrobat-style chip at the box's top-left naming the tag type.
   const tag = document.createElement("span");
   tag.className = "btag";
@@ -399,7 +402,8 @@ function nodeBox(node, size) {
 function renderPageStack(file) {
   const stack = $("page-stack");
   stack.innerHTML = "";
-  const boxesByPage = [];
+  clearBulkSelection();
+  boxesByPage = [];
   if (structTree.tagged) collectLeafBoxes(structTree.root, boxesByPage);
   const bands = [];
   structTree.pages.forEach((size, i) => {
@@ -414,6 +418,7 @@ function renderPageStack(file) {
     for (const node of boxesByPage[i] || []) {
       band.appendChild(nodeBox(node, size));
     }
+    band.addEventListener("mousedown", (e) => startMarquee(e, band, i, size));
     stack.appendChild(band);
     bands.push(band);
   });
@@ -431,6 +436,7 @@ function renderPageStack(file) {
           const img = document.createElement("img");
           img.alt = `Page ${index + 1}`;
           img.src = result.data_uri;
+          img.draggable = false; // the mouse draws marquees here, not image drags
           band.prepend(img);
         });
       }
@@ -510,6 +516,150 @@ function renderTree() {
     more.textContent = "…tree shortened (very large document)";
     box.appendChild(more);
   }
+}
+
+// ---------------------------------------------------- marquee (drag) selection
+// Acrobat-style: drag a rectangle on a page and every tag box inside it is
+// selected, then the bar above the pages offers one bulk action for the lot --
+// merge into one tag, retag all, or mark all decorative. One drag = one saved
+// operation = one undo step. The marquee lives on a single page band: reading
+// order across pages is what the tree is for.
+
+function startMarquee(e, band, pageIndex, size) {
+  if (e.button !== 0 || !structTree || !structTree.tagged) return;
+  e.preventDefault(); // no native image drag, no text selection
+  const rect = band.getBoundingClientRect();
+  const x0 = e.clientX - rect.left;
+  const y0 = e.clientY - rect.top;
+  let dragged = false;
+  const marquee = document.createElement("div");
+  marquee.className = "marquee";
+
+  const shape = (ev) => {
+    const x1 = Math.min(Math.max(ev.clientX - rect.left, 0), rect.width);
+    const y1 = Math.min(Math.max(ev.clientY - rect.top, 0), rect.height);
+    marquee.style.left = `${Math.min(x0, x1)}px`;
+    marquee.style.top = `${Math.min(y0, y1)}px`;
+    marquee.style.width = `${Math.abs(x1 - x0)}px`;
+    marquee.style.height = `${Math.abs(y1 - y0)}px`;
+    return [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
+  };
+
+  const onMove = (ev) => {
+    if (!dragged && Math.hypot(ev.clientX - rect.left - x0, ev.clientY - rect.top - y0) < 5) {
+      return; // still a click, not a drag
+    }
+    if (!dragged) {
+      dragged = true;
+      band.appendChild(marquee);
+    }
+    shape(ev);
+  };
+
+  const onUp = (ev) => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    if (!dragged) return; // a plain click: the box's own onclick handles it
+    const [px0, py0, px1, py1] = shape(ev);
+    marquee.remove();
+    // one drag must not ALSO fire the click of whatever box it ended on
+    band.addEventListener("click", (c) => c.stopPropagation(), { capture: true, once: true });
+    // CSS pixels -> PDF points (y flips: PDF measures from the bottom)
+    const sel = [
+      (px0 / rect.width) * size.width,
+      size.height - (py1 / rect.height) * size.height,
+      (px1 / rect.width) * size.width,
+      size.height - (py0 / rect.height) * size.height,
+    ];
+    setBulkSelection(
+      (boxesByPage[pageIndex] || []).filter((node) => boxCovered(node.box, sel))
+    );
+  };
+
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
+// selected when at least 40% of the tag's box falls inside the rectangle: a
+// sloppy drag still catches whole lines without grabbing barely-touched ones.
+function boxCovered(box, sel) {
+  const w = Math.min(box[2], sel[2]) - Math.max(box[0], sel[0]);
+  const h = Math.min(box[3], sel[3]) - Math.max(box[1], sel[1]);
+  if (w <= 0 || h <= 0) return false;
+  const area = (box[2] - box[0]) * (box[3] - box[1]);
+  return area <= 0 || (w * h) / area >= 0.4;
+}
+
+function setBulkSelection(nodes) {
+  clearBulkSelection();
+  if (nodes.length < 2) {
+    // one tag needs no bulk bar -- open it in the ordinary editor instead
+    if (nodes.length === 1) selectNode(nodes[0], { scrollTree: true });
+    return;
+  }
+  bulkSelected = nodes;
+  for (const node of nodes) {
+    if (node.__box) node.__box.classList.add("bulksel");
+    if (node.__row) node.__row.classList.add("bulksel");
+  }
+  const bar = $("bulk-bar");
+  bar.hidden = false;
+  $("bulk-count").textContent = `${nodes.length} tags selected`;
+  const select = $("bulk-type");
+  if (!select.options.length) {
+    for (const t of tagTypes) {
+      const opt = document.createElement("option");
+      opt.value = t;
+      opt.textContent = `${typeText(t)} (${t})`;
+      select.appendChild(opt);
+    }
+    select.value = "P";
+  }
+}
+
+function clearBulkSelection() {
+  bulkSelected = [];
+  $("bulk-bar").hidden = true;
+  document.querySelectorAll(".bulksel").forEach((el) => el.classList.remove("bulksel"));
+}
+
+async function runBulk(action) {
+  if (bulkSelected.length < 2) return;
+  const n = bulkSelected.length;
+  const newType = $("bulk-type").value || "P";
+  if (action === "decorative") {
+    const withText = bulkSelected.filter((s) => s.text && s.text.trim().length > 3).length;
+    if (
+      withText &&
+      !window.confirm(
+        `${withText} of the ${n} selected tags contain text. Marking them decorative ` +
+          "removes them from the reading order, so a screen reader will not read " +
+          "them out. Do that only for decoration.\n\nContinue?"
+      )
+    ) {
+      return;
+    }
+  }
+  for (const id of ["bulk-merge", "bulk-retag", "bulk-deco"]) $(id).disabled = true;
+  setStatus("Applying to the selection…");
+  const result = await api.bulkEdit(selected, action, bulkSelected.map((s) => s.id), newType);
+  for (const id of ["bulk-merge", "bulk-retag", "bulk-deco"]) $(id).disabled = false;
+  if (result.error) {
+    setStatus(result.error);
+    return;
+  }
+  const what = {
+    merge: `${n} tags merged into one ${typeText(newType)}`,
+    retag: `${n} tags changed to ${typeText(newType)}`,
+    decorative: `${n} tags marked decorative`,
+  }[action];
+  const verdict = result.verapdf_passed
+    ? "automatic check now passes"
+    : `automatic check: ${(result.failed_clauses || []).length} issue(s) left`;
+  setStatus(`${what} - ${verdict}. One "Undo last change" reverses all of it.`);
+  const file = selected;
+  await refresh();
+  if (selected === file) await loadStructure(file); // clears the selection too
 }
 
 // ------------------------------------------------------------ tag editing
@@ -941,8 +1091,14 @@ async function init() {
   $("help-overlay").onclick = (e) => {
     if (e.target === $("help-overlay")) $("help-overlay").hidden = true;
   };
+  $("bulk-merge").onclick = () => runBulk("merge");
+  $("bulk-retag").onclick = () => runBulk("retag");
+  $("bulk-deco").onclick = () => runBulk("decorative");
+  $("bulk-clear").onclick = clearBulkSelection;
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") $("help-overlay").hidden = true;
+    if (e.key !== "Escape") return;
+    $("help-overlay").hidden = true;
+    clearBulkSelection();
   });
 
   // full paths live in the folder buttons' tooltips, not the header.

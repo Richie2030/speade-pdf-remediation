@@ -68,6 +68,13 @@ class MoveBody(BaseModel):
     delta: int
 
 
+class BulkBody(BaseModel):
+    file: str
+    action: str
+    node_ids: list[int]
+    new_type: str | None = None
+
+
 def create_app(config_path: Path | None = None) -> FastAPI:
     cfg = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
     bridge = SpeadeApi(cfg)  # headless: no window; uploads replace the native dialog
@@ -170,6 +177,10 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     @app.post("/api/move_tag")
     def move_tag(body: MoveBody) -> dict:
         return bridge.move_tag(body.file, body.node_id, body.delta)
+
+    @app.post("/api/bulk_edit")
+    def bulk_edit(body: BulkBody) -> dict:
+        return bridge.bulk_edit(body.file, body.action, body.node_ids, body.new_type)
 
     @app.post("/api/unwrap_tag")
     def unwrap_tag(body: NodeBody) -> dict:

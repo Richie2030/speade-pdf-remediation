@@ -279,6 +279,145 @@ def _mark_content_as_artifact(doc, pikepdf, element) -> int:
     return rewritten
 
 
+def _elements_by_ids(doc, pikepdf, node_ids: list[int]) -> dict:
+    """Resolve several pre-order ids to (element, parent) in ONE walk. Bulk
+    operations must resolve every id BEFORE mutating anything: removals shift
+    the pre-order numbering, so a second lookup would hit the wrong tag."""
+    wanted = set(node_ids)
+    found: dict[int, tuple] = {}
+    root = doc.Root.get("/StructTreeRoot")
+    if root is None:
+        return found
+
+    def walk(node, parent, state):
+        if isinstance(node, pikepdf.Array):
+            for kid in node:
+                walk(kid, parent, state)
+            return
+        if not _is_element(node, pikepdf) or state["count"] >= _MAX_NODES:
+            return
+        if state["count"] in wanted:
+            found[state["count"]] = (node, parent)
+        state["count"] += 1
+        kids = node.get("/K")
+        if kids is not None:
+            for kid in kids if isinstance(kids, pikepdf.Array) else [kids]:
+                walk(kid, node, state)
+
+    walk(root.get("/K"), None, {"count": 0})
+    return found
+
+
+def _objgen(obj):
+    try:
+        return obj.objgen
+    except Exception:
+        return None
+
+
+def _drop_nested(found: dict, pikepdf) -> dict:
+    """Drop ids whose element sits INSIDE another selected element -- operating
+    on both a parent and its descendant would double-apply (or cycle, for a
+    merge). The outermost selection wins. Walks down from each selected element
+    rather than trusting /P links, which not every producer writes."""
+    inside: set = set()
+    selected = {_objgen(el) for el, _ in found.values()} - {None}
+
+    def mark_descendants(node) -> None:
+        kids = node.get("/K")
+        if kids is None:
+            return
+        for kid in kids if isinstance(kids, pikepdf.Array) else [kids]:
+            if _is_element(kid, pikepdf):
+                key = _objgen(kid)
+                if key in selected:
+                    inside.add(key)
+                mark_descendants(kid)
+
+    for element, _parent in found.values():
+        mark_descendants(element)
+    return {nid: pair for nid, pair in found.items() if _objgen(pair[0]) not in inside}
+
+
+def _remove_from_parent(kids, element) -> bool:
+    """Delete `element` from a /K array; True if it was found there."""
+    for i, kid in enumerate(kids):
+        try:
+            same = kid.objgen == element.objgen
+        except Exception:
+            same = kid is element
+        if same:
+            del kids[i]
+            return True
+    return False
+
+
+def _element_and_descendants(element, pikepdf) -> list:
+    """Objgens of this element and every structure element inside it. When a
+    container leaves the tree, its whole subtree dies with it -- the parent-tree
+    entries of ALL of them must be dealt with, not just the container's."""
+    keys = []
+
+    def walk(node) -> None:
+        key = _objgen(node)
+        if key is not None:
+            keys.append(key)
+        kids = node.get("/K")
+        if kids is None:
+            return
+        for kid in kids if isinstance(kids, pikepdf.Array) else [kids]:
+            if _is_element(kid, pikepdf):
+                walk(kid)
+
+    walk(element)
+    return keys
+
+
+def _repoint_parent_tree(doc, pikepdf, replacements: dict) -> int:
+    """Update /StructTreeRoot /ParentTree -- the lookup table that maps page
+    content back to its owning tag -- after elements were merged or removed.
+    `replacements` maps an old element's objgen to its replacement element, or
+    to None to clear the entry (content that became an artifact). Without this,
+    the table keeps pointing at dead objects: a document that LOOKS right but
+    whose content-to-tag mapping is broken. Returns entries updated."""
+    root = doc.Root.get("/StructTreeRoot")
+    tree = root.get("/ParentTree") if root is not None else None
+    if tree is None:
+        return 0
+    null = pikepdf.Object.parse(b"null")
+    updated = 0
+
+    def fix_value(value):
+        nonlocal updated
+        if isinstance(value, pikepdf.Array):
+            for i, entry in enumerate(value):
+                key = _objgen(entry)
+                if key is not None and key in replacements:
+                    new = replacements[key]
+                    value[i] = null if new is None else new
+                    updated += 1
+            return value
+        key = _objgen(value)
+        if key is not None and key in replacements:
+            new = replacements[key]
+            updated += 1
+            return null if new is None else new
+        return value
+
+    def walk(node) -> None:
+        nums = node.get("/Nums")
+        if isinstance(nums, pikepdf.Array):
+            for i in range(1, len(nums), 2):
+                nums[i] = fix_value(nums[i])
+        kids = node.get("/Kids")
+        if isinstance(kids, pikepdf.Array):
+            for kid in kids:
+                walk(kid)
+
+    walk(tree)
+    return updated
+
+
 def edit_element(pdf: Path, node_id: int, mutate) -> str:
     """Apply `mutate(element_dict, pikepdf)` to the tag addressed by `node_id`
     and save the document in place. Returns the element's structure type as it
@@ -330,14 +469,12 @@ def make_decorative(pdf: Path, node_id: int) -> dict:
         was = str(element.get("/S")).lstrip("/")
         artifacts = _mark_content_as_artifact(doc, pikepdf, element)
         kids, _owner = _kid_list(parent, pikepdf, doc.Root.StructTreeRoot)
-        for i, kid in enumerate(kids):
-            try:
-                same = kid.objgen == element.objgen
-            except Exception:
-                same = kid is element
-            if same:
-                del kids[i]
-                break
+        _remove_from_parent(kids, element)
+        # artifact content has no structure parent: clear the lookup entries of
+        # the element AND of everything that just left the tree inside it
+        _repoint_parent_tree(
+            doc, pikepdf, dict.fromkeys(_element_and_descendants(element, pikepdf))
+        )
         _save_over(doc, pdf)
     except BaseException:
         doc.close()
@@ -449,6 +586,103 @@ def unwrap_element(pdf: Path, node_id: int) -> dict:
         doc.close()
         raise
     return {"was": was, "promoted": len(promoted)}
+
+
+def merge_elements(pdf: Path, node_ids: list[int], new_type: str) -> dict:
+    """Merge several tags into ONE of type `new_type`: the first (in reading
+    order) survives and receives every other tag's contents, in order -- the fix
+    for one paragraph fragmented into many, or a figure split from its caption.
+
+    All in one open->atomic-save, so a failure changes nothing. Ids nested
+    inside other selected ids are ignored (the outermost tag wins). Raises
+    LookupError when fewer than two of the ids resolve.
+    """
+    import pikepdf
+
+    doc = pikepdf.open(pdf)
+    try:
+        found = _drop_nested(_elements_by_ids(doc, pikepdf, node_ids), pikepdf)
+        if len(found) < 2:
+            raise LookupError("select at least two tags to merge")
+        ordered = [found[nid] for nid in sorted(found)]
+        survivor, _ = ordered[0]
+        survivor_pg = survivor.get("/Pg")
+        merged_kids, _owner = _kid_list(survivor, pikepdf, doc.Root.StructTreeRoot)
+        repoint: dict = {}
+        for element, parent in ordered[1:]:
+            source_pg = element.get("/Pg")
+            same_page = (
+                source_pg is not None
+                and survivor_pg is not None
+                and _objgen(source_pg) == _objgen(survivor_pg)
+            )
+            for kid in list(_kid_list(element, pikepdf, doc.Root.StructTreeRoot)[0]):
+                if isinstance(kid, int) and not same_page and source_pg is not None:
+                    # a bare MCID means "on my element's /Pg" -- moving it to a
+                    # tag on another page must keep that page explicit
+                    kid = pikepdf.Dictionary(Type=pikepdf.Name("/MCR"), Pg=source_pg, MCID=kid)
+                merged_kids.append(kid)
+                if _is_element(kid, pikepdf):
+                    with suppress(Exception):
+                        kid.P = survivor
+            parent_kids, _po = _kid_list(parent, pikepdf, doc.Root.StructTreeRoot)
+            _remove_from_parent(parent_kids, element)
+            if _objgen(element) is not None:
+                repoint[_objgen(element)] = survivor
+        survivor.S = pikepdf.Name("/" + new_type)
+        _repoint_parent_tree(doc, pikepdf, repoint)
+        _save_over(doc, pdf)
+    except BaseException:
+        doc.close()
+        raise
+    return {"merged": len(ordered), "type": new_type}
+
+
+def retag_elements(pdf: Path, node_ids: list[int], new_type: str) -> dict:
+    """Set several tags to `new_type` in one atomic save (bulk retag)."""
+    import pikepdf
+
+    doc = pikepdf.open(pdf)
+    try:
+        found = _elements_by_ids(doc, pikepdf, node_ids)
+        if not found:
+            raise LookupError("none of the selected tags were found")
+        was = []
+        for nid in sorted(found):
+            element, _parent = found[nid]
+            was.append(str(element.get("/S")).lstrip("/"))
+            element.S = pikepdf.Name("/" + new_type)
+        _save_over(doc, pdf)
+    except BaseException:
+        doc.close()
+        raise
+    return {"changed": len(was), "was": was, "type": new_type}
+
+
+def make_decorative_many(pdf: Path, node_ids: list[int]) -> dict:
+    """Mark several tags decorative in one atomic save. Ids nested inside other
+    selected ids are ignored (removing the outer tag covers them)."""
+    import pikepdf
+
+    doc = pikepdf.open(pdf)
+    try:
+        found = _drop_nested(_elements_by_ids(doc, pikepdf, node_ids), pikepdf)
+        if not found:
+            raise LookupError("none of the selected tags were found")
+        artifacts = 0
+        repoint: dict = {}
+        for nid in sorted(found):
+            element, parent = found[nid]
+            artifacts += _mark_content_as_artifact(doc, pikepdf, element)
+            kids, _owner = _kid_list(parent, pikepdf, doc.Root.StructTreeRoot)
+            _remove_from_parent(kids, element)
+            repoint.update(dict.fromkeys(_element_and_descendants(element, pikepdf)))
+        _repoint_parent_tree(doc, pikepdf, repoint)
+        _save_over(doc, pdf)
+    except BaseException:
+        doc.close()
+        raise
+    return {"removed": len(found), "artifacts": artifacts}
 
 
 def remove_all_tags(pdf: Path) -> dict:

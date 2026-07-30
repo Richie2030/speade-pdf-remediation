@@ -61,6 +61,13 @@ const api = {
   makeDecorative: (file, nodeId) => postJSON("/api/decorative", { file, node_id: nodeId }),
   moveTag: (file, nodeId, delta) =>
     postJSON("/api/move_tag", { file, node_id: nodeId, delta }),
+  bulkEdit: (file, action, nodeIds, newType) =>
+    postJSON("/api/bulk_edit", {
+      file,
+      action,
+      node_ids: nodeIds,
+      new_type: newType || null,
+    }),
   unwrapTag: (file, nodeId) => postJSON("/api/unwrap_tag", { file, node_id: nodeId }),
   undoLastEdit: (file) => postJSON("/api/undo_last_edit", { file }),
   removeAllTags: (file) => postJSON("/api/remove_all_tags", { file }),

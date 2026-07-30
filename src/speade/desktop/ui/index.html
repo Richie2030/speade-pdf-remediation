@@ -69,6 +69,14 @@
             <div id="tag-tree" aria-label="Tag structure, click a tag to see it on the page"></div>
           </div>
           <div id="page-side">
+            <div id="bulk-bar" hidden>
+              <span id="bulk-count"></span>
+              <select id="bulk-type" title="The tag type for Merge and Change all"></select>
+              <button id="bulk-merge" title="The selected tags become ONE tag of the chosen type, contents kept in reading order">Merge into one</button>
+              <button id="bulk-retag" title="Every selected tag becomes the chosen type">Change all</button>
+              <button id="bulk-deco" title="Every selected tag leaves the reading order (no description needed)">Mark all decorative</button>
+              <button id="bulk-clear">Clear</button>
+            </div>
             <div id="page-stack"></div>
             <div id="structure-note" class="muted" hidden></div>
           </div>
@@ -201,8 +209,23 @@
           <li>Does the top-to-bottom order match sensible reading order?</li>
           <li>Are lists and tables tagged as lists and tables?</li>
           <li>Does every meaningful image say <b>Image</b> — and have a
-            description? ("(no description yet)" means you write one, in Acrobat.)</li>
+            description? ("needs description" means you write one, below the pages.)</li>
           <li>Is any visible content missing a box entirely? No box = not tagged.</li>
+        </ul>
+
+        <h3>Fixing tags without leaving the app</h3>
+        <ul>
+          <li><b>One tag</b> — click it (tree or page box): change its type, write
+            an image description, mark it decorative, remove a wrapper, or move it
+            earlier/later in the reading order.</li>
+          <li><b>Many tags</b> — <b>drag a rectangle on a page</b>, like Acrobat.
+            The bar that appears can <i>merge them into one tag</i> (the fix for
+            over-fragmented text), <i>change all</i>, or <i>mark all decorative</i>.</li>
+          <li><b>Undo</b> — <i>Undo last change</i> steps back one edit at a time;
+            <i>Undo all edits</i> starts over from the original. Every edit re-runs
+            the automatic check and is recorded in History.</li>
+          <li>Still Acrobat's job: splitting one tag into several, tagging content
+            that has no tag at all, and table header cells.</li>
         </ul>
 
         <h3>Common questions</h3>
@@ -220,8 +243,9 @@
           <dd>veraPDF, the official PDF/UA accessibility validator. Its verdict is
             advice — your Approve/Reject is the decision, and it is recorded.</dd>
           <dt>Who writes the image descriptions?</dt>
-          <dd>You do, in Acrobat — descriptions are never machine-written. That's
-            deliberate: quality needs a human.</dd>
+          <dd>You do — select the image and type it below the pages (or in
+            Acrobat). Descriptions are never machine-written. That's deliberate:
+            quality needs a human.</dd>
           <dt>Where do finished documents go?</dt>
           <dd><code>outbox\approved</code> — share the PDF only; the app's record
             files stay behind.</dd>

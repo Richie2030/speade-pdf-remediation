@@ -283,6 +283,20 @@ class SpeadeApi:
         except Exception as exc:
             return {"error": f"could not move the tag: {str(exc)[:120]}"}
 
+    def bulk_edit(
+        self, file: str, action: str, node_ids: list, new_type: str | None = None
+    ) -> dict:
+        """Apply one action to a drag-selection of tags (merge / retag / decorative)."""
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
+        try:
+            return service.bulk_edit(pdf, action, list(node_ids), new_type, self._config_path)
+        except (ValueError, LookupError) as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            return {"error": f"could not apply the change: {str(exc)[:120]}"}
+
     def unwrap_tag(self, file: str, node_id: int) -> dict:
         """Remove one tag but keep its contents (unwrap a bogus wrapper)."""
         pdf = self._resolve(file)

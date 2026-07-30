@@ -607,6 +607,47 @@ def move_tag(
     )
 
 
+def bulk_edit(
+    pdf: Path,
+    action: str,
+    node_ids: list[int],
+    new_type: str | None = None,
+    config_path: Path = DEFAULT_CONFIG_PATH,
+) -> dict[str, Any]:
+    """One drag-selection's worth of edits as a SINGLE operation: one undo
+    snapshot, one atomic save, one veraPDF re-check, one audit event.
+
+    Actions: 'merge' (the selected tags become one tag of `new_type`, contents
+    in reading order), 'retag' (every selected tag becomes `new_type`),
+    'decorative' (every selected tag leaves the reading order). Raises
+    ValueError for a bad action/type, LookupError when ids do not resolve.
+    """
+    ids = sorted({int(n) for n in node_ids})
+    if not ids:
+        raise ValueError("nothing selected")
+    if action in ("merge", "retag"):
+        if new_type not in EDITABLE_TAG_TYPES:
+            raise ValueError(f"not an editable tag type: {new_type}")
+    elif action != "decorative":
+        raise ValueError(f"unknown bulk action: {action}")
+
+    ws = workspace(config_path)
+    with _edit_guard(ws, pdf):
+        if action == "merge":
+            result = structure.merge_elements(pdf, ids, new_type)
+        elif action == "retag":
+            result = structure.retag_elements(pdf, ids, new_type)
+        else:
+            result = structure.make_decorative_many(pdf, ids)
+    out = _after_edit(
+        ws,
+        pdf,
+        {"event": "edit-bulk", "action": action, "count": len(ids), "type": new_type},
+    )
+    out.update(result)
+    return out
+
+
 def remove_all_tags(pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
     """Strip the entire tag structure (the start-over escape hatch). The
     document stays visually identical and can be reprocessed or tagged from

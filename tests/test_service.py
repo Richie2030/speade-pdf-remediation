@@ -480,6 +480,35 @@ def test_unwrap_tag_removes_a_wrapper_and_is_audited(tmp_path):
     assert [k.type for k in service.structure_tree(out).root[0].kids] == ["L"]
 
 
+def test_bulk_edit_is_one_operation_one_undo_step(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    config = _write_config(tmp_path)
+    _tagged_source(tmp_path)
+    service.run_batch(None, config)
+    out = tmp_path / "outbox" / "doc.pdf"
+    ids = [k.id for k in service.structure_tree(out).root[0].kids]
+    assert len(ids) == 2  # the P and the Figure
+
+    result = service.bulk_edit(out, "merge", ids, "P", config)
+
+    assert result["ok"] and result["merged"] == 2 and result["type"] == "P"
+    assert [k.type for k in service.structure_tree(out).root[0].kids] == ["P"]
+    event = service.audit_events(config)[0]
+    assert event["event"] == "edit-bulk"
+    assert event["action"] == "merge" and event["count"] == 2
+
+    # the whole drag-selection reverses as ONE undo step
+    assert service.undo_depth("doc.pdf", config) == 1
+    service.undo_last_edit(out, config)
+    assert [k.type for k in service.structure_tree(out).root[0].kids] == ["P", "Figure"]
+
+    with pytest.raises(ValueError, match="not an editable tag type"):
+        service.bulk_edit(out, "retag", ids, "Bogus", config)
+    with pytest.raises(ValueError, match="unknown bulk action"):
+        service.bulk_edit(out, "explode", ids, None, config)
+    assert service.undo_depth("doc.pdf", config) == 0  # refused edits leave no step
+
+
 def test_reprocess_undoes_edits_from_the_original(tmp_path):
     pytest.importorskip("pypdfium2", reason="needs --extra ocr")
     config = _write_config(tmp_path)

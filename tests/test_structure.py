@@ -287,6 +287,140 @@ def test_summarize_reports_heading_level_skips(tmp_path):
     assert summary.heading_skips == ["H1 to H3"]  # veraPDF 7.4.2-1
 
 
+def _two_para_pdf(tmp_path, name="pair.pdf"):
+    """Document > (P 'first line' MCID 0, P 'second line' MCID 1) with a real
+    /ParentTree, the way a conforming producer writes it -- so tests can prove
+    the content-to-tag lookup table is maintained through merges/removals."""
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(612, 792))
+    page.Resources = pikepdf.Dictionary(
+        Font=pikepdf.Dictionary(
+            F1=pikepdf.Dictionary(
+                Type=pikepdf.Name.Font,
+                Subtype=pikepdf.Name.Type1,
+                BaseFont=pikepdf.Name.Helvetica,
+            )
+        )
+    )
+    page.Contents = pdf.make_stream(
+        b"/P <</MCID 0>> BDC BT /F1 12 Tf 72 700 Td (first line) Tj ET EMC\n"
+        b"/P <</MCID 1>> BDC BT /F1 12 Tf 72 680 Td (second line) Tj ET EMC"
+    )
+    first = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name.P, K=0, Pg=page.obj))
+    second = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name.P, K=1, Pg=page.obj))
+    doc_elem = pdf.make_indirect(
+        pikepdf.Dictionary(S=pikepdf.Name("/Document"), K=pikepdf.Array([first, second]))
+    )
+    page.StructParents = 0
+    pdf.Root.StructTreeRoot = pdf.make_indirect(
+        pikepdf.Dictionary(
+            Type=pikepdf.Name.StructTreeRoot,
+            K=doc_elem,
+            ParentTree=pdf.make_indirect(
+                pikepdf.Dictionary(Nums=pikepdf.Array([0, pikepdf.Array([first, second])]))
+            ),
+        )
+    )
+    out = tmp_path / name
+    pdf.save(out)
+    return out
+
+
+def _parent_tree_entries(doc):
+    return list(doc.Root.StructTreeRoot.ParentTree.Nums[1])
+
+
+def test_merge_elements_combines_content_and_repoints_parent_tree(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import merge_elements, structure_tree
+
+    out = _two_para_pdf(tmp_path)
+    tree = structure_tree(out)
+    ids = [k.id for k in tree.root[0].kids]
+
+    result = merge_elements(out, ids, "P")
+
+    assert result == {"merged": 2, "type": "P"}
+    after = structure_tree(out)
+    (merged,) = after.root[0].kids
+    assert merged.type == "P"
+    assert "first line" in merged.text and "second line" in merged.text
+    with pikepdf.open(out) as doc:
+        survivor = doc.Root.StructTreeRoot.K.K[0]
+        assert [int(k) for k in survivor.K] == [0, 1]  # both MCIDs, in order
+        # the content-to-tag lookup table now points BOTH entries at the survivor
+        entries = _parent_tree_entries(doc)
+        assert all(e.objgen == survivor.objgen for e in entries)
+
+    with pytest.raises(LookupError, match="at least two"):
+        merge_elements(out, [0], "P")
+
+
+def test_merge_into_a_figure_retags_the_survivor(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import merge_elements, structure_tree
+
+    out = _two_para_pdf(tmp_path, "fig.pdf")
+    ids = [k.id for k in structure_tree(out).root[0].kids]
+    merge_elements(out, ids, "Figure")
+    (merged,) = structure_tree(out).root[0].kids
+    assert merged.type == "Figure"
+
+
+def test_retag_elements_changes_many_in_one_save(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import retag_elements, structure_tree
+
+    out = _two_para_pdf(tmp_path, "retag.pdf")
+    ids = [k.id for k in structure_tree(out).root[0].kids]
+
+    result = retag_elements(out, ids, "H2")
+
+    assert result == {"changed": 2, "was": ["P", "P"], "type": "H2"}
+    assert [k.type for k in structure_tree(out).root[0].kids] == ["H2", "H2"]
+
+
+def test_make_decorative_many_ignores_nested_ids_and_clears_parent_tree(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import make_decorative_many, structure_tree
+
+    out = _two_para_pdf(tmp_path, "deco2.pdf")
+    tree = structure_tree(out)
+    document = tree.root[0]
+    first = document.kids[0]
+
+    # selecting a parent AND its child must not double-apply: the outer wins
+    result = make_decorative_many(out, [document.id, first.id])
+
+    assert result == {"removed": 1, "artifacts": 2}  # the Document, once
+    assert structure_tree(out).root == []
+    with pikepdf.open(out) as doc:
+        content = doc.pages[0].Contents.read_bytes()
+        assert content.count(b"/Artifact BMC") == 2
+        assert b"/MCID" not in content
+        # artifact content has no structure parent: entries cleared, not dangling
+        for entry in _parent_tree_entries(doc):
+            assert not isinstance(entry, pikepdf.Dictionary)
+
+
+def test_make_decorative_clears_its_parent_tree_entry(tmp_path):
+    # regression: the single-tag path used to leave the lookup table pointing
+    # at the deleted element -- a document that looks right but maps wrong.
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import make_decorative, structure_tree
+
+    out = _two_para_pdf(tmp_path, "deco3.pdf")
+    first = structure_tree(out).root[0].kids[0]
+
+    make_decorative(out, first.id)
+
+    with pikepdf.open(out) as doc:
+        cleared, kept = _parent_tree_entries(doc)
+        assert not isinstance(cleared, pikepdf.Dictionary)  # no dangling ref
+        survivor = doc.Root.StructTreeRoot.K.K[0]
+        assert kept.objgen == survivor.objgen
+
+
 def test_structure_tree_untagged_pdf(tmp_path):
     pytest.importorskip("pypdfium2", reason="needs --extra ocr")
     from speade.validation.structure import structure_tree
