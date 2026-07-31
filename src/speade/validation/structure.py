@@ -110,6 +110,16 @@ class PageSize(BaseModel):
     height: float
 
 
+class LineRef(BaseModel):
+    """One marked-content sequence (one text line, in practice) a tag owns --
+    the unit the carve tool works at: fine enough to grab 'the last two lines
+    of this paragraph', never finer than the content is actually marked."""
+
+    page: int
+    mcid: int
+    box: list[float]  # [x0, y0, x1, y1] page points, y bottom-up
+
+
 class StructureNode(BaseModel):
     """One tag in the tree, with enough geometry to highlight it on the page."""
 
@@ -119,7 +129,20 @@ class StructureNode(BaseModel):
     page: int | None = None  # 0-based page its content sits on (first found)
     box: list[float] | None = None  # [x0, y0, x1, y1] page points, y bottom-up
     text: str = ""  # snippet of the node's own marked content
+    lines: list[LineRef] = Field(default_factory=list)  # per-line geometry
     kids: list[StructureNode] = Field(default_factory=list)
+
+
+class UntaggedRef(BaseModel):
+    """One drawn piece of content that belongs to NO tag -- text the engine
+    missed, or content a reviewer marked decorative. The drag tool can wrap it
+    in a brand-new tag (tag_objects); `index` is its position in the page's
+    drawing order, which tag_objects re-derives and validates before writing."""
+
+    page: int
+    index: int  # pdfium page-object index == paint-operator ordinal
+    box: list[float]
+    kind: str  # "text" | "image" | "form"
 
 
 class StructureTree(BaseModel):
@@ -129,6 +152,7 @@ class StructureTree(BaseModel):
     pages: list[PageSize] = Field(default_factory=list)
     root: list[StructureNode] = Field(default_factory=list)
     truncated: bool = False  # _MAX_NODES hit: the tree shown is a prefix
+    untagged: list[UntaggedRef] = Field(default_factory=list)
 
 
 def _is_element(node, pikepdf) -> bool:
@@ -685,6 +709,459 @@ def make_decorative_many(pdf: Path, node_ids: list[int]) -> dict:
     return {"removed": len(found), "artifacts": artifacts}
 
 
+def _page_parent_array(doc, pikepdf, page):
+    """The /ParentTree value array for `page` -- indexed BY MCID, so carving a
+    line out of a tag must re-point the entry at that line's index. None when
+    the document has no parent tree or the page no key into it."""
+    root = doc.Root.get("/StructTreeRoot")
+    tree = root.get("/ParentTree") if root is not None else None
+    key = page.get("/StructParents")
+    if tree is None or key is None:
+        return None
+    key = int(key)
+
+    def find(node):
+        nums = node.get("/Nums")
+        if isinstance(nums, pikepdf.Array):
+            for i in range(0, len(nums) - 1, 2):
+                if int(nums[i]) == key:
+                    value = nums[i + 1]
+                    return value if isinstance(value, pikepdf.Array) else None
+        kids = node.get("/Kids")
+        if isinstance(kids, pikepdf.Array):
+            for kid in kids:
+                hit = find(kid)
+                if hit is not None:
+                    return hit
+        return None
+
+    return find(tree)
+
+
+def _owns_mcid(kid, mcid: int, page, pikepdf) -> bool:
+    """Is this /K entry the marked-content reference for `mcid` on `page`?"""
+    if isinstance(kid, int):
+        return int(kid) == mcid
+    if isinstance(kid, pikepdf.Dictionary) and kid.get("/Type") == pikepdf.Name("/MCR"):
+        same_page = kid.get("/Pg") is None or _objgen(kid.get("/Pg")) == _objgen(page)
+        return same_page and kid.get("/MCID") is not None and int(kid.get("/MCID")) == mcid
+    return False
+
+
+def carve_lines(pdf: Path, picks: list[dict], new_type: str) -> dict:
+    """Carve chosen LINES out of their tags into one NEW tag of `new_type` --
+    the fix for a heading the engine swallowed into the paragraph below it.
+    Each pick is {"node_id": tag, "mcid": line}; all must sit on one page.
+
+    The new tag lands next to the first donor in reading order -- before it when
+    the donor's opening line was carved (a heading belongs above its paragraph),
+    after it otherwise. A donor left with nothing is removed. The per-line
+    parent-tree entries are re-pointed at the new tag; without that the file
+    would look right but map its content to the wrong tags.
+
+    One open -> atomic save. Raises LookupError / ValueError on bad picks.
+    """
+    import pikepdf
+
+    doc = pikepdf.open(pdf)
+    try:
+        by_donor: dict[int, list[int]] = {}
+        for pick in picks:
+            by_donor.setdefault(int(pick["node_id"]), []).append(int(pick["mcid"]))
+        found = _elements_by_ids(doc, pikepdf, list(by_donor))
+        if len(found) < len(by_donor):
+            raise LookupError("some of the selected tags were not found")
+
+        pages = {
+            _objgen(found[nid][0].get("/Pg"))
+            for nid in by_donor
+            if found[nid][0].get("/Pg") is not None
+        }
+        if len(pages) > 1:
+            raise ValueError("select lines on one page at a time")
+
+        moved: list[tuple[int, object]] = []  # (mcid, the /K entry), for ordering
+        emptied: list[tuple] = []  # (element, parent) drained of everything
+        first_id = min(by_donor)
+        first_donor, first_parent = found[first_id]
+        carve_page = first_donor.get("/Pg")
+        opening_line_carved = False
+
+        for nid in sorted(by_donor):
+            element, parent = found[nid]
+            kids, _owner = _kid_list(element, pikepdf, doc.Root.StructTreeRoot)
+            content = [
+                (i, kid)
+                for i, kid in enumerate(kids)
+                if isinstance(kid, int)
+                or (
+                    isinstance(kid, pikepdf.Dictionary) and kid.get("/Type") == pikepdf.Name("/MCR")
+                )
+            ]
+            for mcid in sorted(set(by_donor[nid])):
+                hit = next(
+                    (
+                        (i, kid)
+                        for i, kid in content
+                        if _owns_mcid(kid, mcid, element.get("/Pg"), pikepdf)
+                    ),
+                    None,
+                )
+                if hit is None:
+                    raise LookupError(f"tag {nid} does not contain line {mcid}")
+                if nid == first_id and content and hit[0] == content[0][0]:
+                    opening_line_carved = True
+                moved.append((mcid, hit[1]))
+            for mcid in sorted(set(by_donor[nid]), reverse=True):
+                for i in range(len(kids) - 1, -1, -1):
+                    if _owns_mcid(kids[i], mcid, element.get("/Pg"), pikepdf):
+                        del kids[i]
+                        break
+            if len(kids) == 0:
+                emptied.append((element, parent))
+
+        moved.sort(key=lambda pair: pair[0])  # content order = MCID order
+        new_element = doc.make_indirect(
+            pikepdf.Dictionary(
+                S=pikepdf.Name("/" + new_type),
+                K=pikepdf.Array([kid for _mcid, kid in moved]),
+            )
+        )
+        if carve_page is not None:
+            new_element.Pg = carve_page
+
+        home_kids, home = _kid_list(first_parent, pikepdf, doc.Root.StructTreeRoot)
+        index = len(home_kids)
+        for i, kid in enumerate(home_kids):
+            if _objgen(kid) == _objgen(first_donor):
+                index = i if opening_line_carved else i + 1
+                break
+        home_kids.insert(index, new_element)
+        new_element.P = home
+
+        for element, parent in emptied:
+            kids, _owner = _kid_list(parent, pikepdf, doc.Root.StructTreeRoot)
+            _remove_from_parent(kids, element)
+
+        if carve_page is not None:
+            parents = _page_parent_array(doc, pikepdf, carve_page)
+            if parents is not None:
+                for mcid, _kid in moved:
+                    if 0 <= mcid < len(parents):
+                        parents[mcid] = new_element
+        _save_over(doc, pdf)
+    except BaseException:
+        doc.close()
+        raise
+    return {
+        "carved": len(moved),
+        "from": len(by_donor),
+        "emptied": len(emptied),
+        "type": new_type,
+    }
+
+
+# paint operators, in the sense pdfium counts page objects: one object per
+# text-showing / path-painting / XObject / shading / inline-image operator.
+_PAINT_OPS = {
+    "Tj", "TJ", "'", '"',  # text
+    "S", "s", "f", "F", "f*", "B", "B*", "b", "b*", "n",  # paths
+    "Do", "sh", "INLINE IMAGE",  # xobjects / shading / inline images
+}  # fmt: skip
+
+
+def _ensure_parent_entry(doc, pikepdf, page, element, mcids: list[int]) -> None:
+    """Record `element` as the owner of `mcids` in the page's parent-tree
+    array, creating the machinery (array, number-tree entry, /StructParents
+    key) when the document lacks it."""
+    root = doc.Root.StructTreeRoot
+    tree = root.get("/ParentTree")
+    if tree is None:
+        tree = doc.make_indirect(pikepdf.Dictionary(Nums=pikepdf.Array([])))
+        root.ParentTree = tree
+    if page.get("/StructParents") is None:
+        nums = tree.get("/Nums")
+        used = (
+            [int(nums[i]) for i in range(0, len(nums) - 1, 2)]
+            if isinstance(nums, pikepdf.Array)
+            else []
+        )
+        page.StructParents = max(used, default=-1) + 1
+    parents = _page_parent_array(doc, pikepdf, page)
+    if parents is None:
+        parents = pikepdf.Array([])
+        key = int(page.StructParents)
+        nums = tree.get("/Nums")
+        if not isinstance(nums, pikepdf.Array):
+            nums = pikepdf.Array([])
+            tree.Nums = nums
+        spot = len(nums)
+        for i in range(0, len(nums) - 1, 2):
+            if int(nums[i]) > key:
+                spot = i
+                break
+        nums.insert(spot, key)
+        nums.insert(spot + 1, doc.make_indirect(parents))
+        parents = _page_parent_array(doc, pikepdf, page)
+    null = pikepdf.Object.parse(b"null")
+    for mcid in mcids:
+        while len(parents) <= mcid:
+            parents.append(null)
+        parents[mcid] = element
+
+
+def tag_objects(pdf: Path, page_index: int, object_indexes: list[int], new_type: str) -> dict:
+    """Wrap UNTAGGED drawn content in a brand-new tag: the chosen page objects
+    (by drawing order) get fresh marked-content ids, one new structure element
+    of `new_type` owning them all, and parent-tree entries -- how a reviewer
+    tags text the engine missed, or brings decorated content back.
+
+    Wrapping is insertion-only: BDC/EMC pairs go AROUND whole operators, so no
+    operator is split and no graphics state is touched. An enclosing /Artifact
+    span is closed before the wrap and reopened after it, so the new content is
+    not nested inside background. Safety: pdfium's object list must match the
+    stream's paint operators 1:1 (validated here, per page); on any mismatch
+    the operation refuses rather than guessing -- Acrobat is the fallback.
+
+    Works on a fully untagged document too (creates the structure root), which
+    is how "Remove all tags" stops being a one-way door.
+    """
+    import pikepdf
+    import pypdfium2 as pdfium
+
+    wanted = sorted({int(i) for i in object_indexes})
+    if not wanted:
+        raise ValueError("nothing selected")
+
+    with PDFIUM_LOCK:
+        import pypdfium2.raw as raw
+
+        fdoc = pdfium.PdfDocument(str(pdf))
+        try:
+            fpage = fdoc[page_index]
+            marked: list[bool] = []
+            for i in range(raw.FPDFPage_CountObjects(fpage.raw)):
+                obj = raw.FPDFPage_GetObject(fpage.raw, i)
+                has = False
+                for m in range(raw.FPDFPageObj_CountMarks(obj)):
+                    mark = raw.FPDFPageObj_GetMark(obj, m)
+                    v = ctypes.c_int(-1)
+                    if raw.FPDFPageObjMark_GetParamIntValue(mark, b"MCID", ctypes.byref(v)):
+                        has = True
+                        break
+                marked.append(has)
+        finally:
+            fdoc.close()
+    if wanted[-1] >= len(marked):
+        raise LookupError("the selection no longer matches the document - reload it")
+    if any(marked[i] for i in wanted):
+        raise ValueError("part of the selection is already tagged - reload and try again")
+
+    doc = pikepdf.open(pdf)
+    try:
+        page = doc.pages[page_index]
+        with suppress(Exception):
+            page.contents_coalesce()
+        instructions = list(pikepdf.parse_content_stream(page))
+        paint_at = [i for i, (_ops, op) in enumerate(instructions) if str(op) in _PAINT_OPS]
+        if len(paint_at) != len(marked):
+            raise ValueError(
+                "this page's drawing is too unusual to tag safely here - tag it in Acrobat"
+            )
+        chosen = {paint_at[i] for i in wanted}
+        first_chosen = min(chosen)
+
+        # fresh MCIDs continue after the page's highest existing one
+        next_mcid = -1
+        for operands, op in instructions:
+            if str(op) == "BDC" and len(operands) == 2:
+                props = operands[1]
+                if isinstance(props, pikepdf.Dictionary) and props.get("/MCID") is not None:
+                    next_mcid = max(next_mcid, int(props.get("/MCID")))
+        next_mcid += 1
+
+        # map out every marked-content span first: an /Artifact span whose WHOLE
+        # painted content was chosen (the shape "mark as decorative" leaves) is
+        # converted back into a content marking in place -- the exact inverse of
+        # decorating, with no re-nesting. Only partially-chosen spans need the
+        # step-out/step-in treatment.
+        spans: list[dict] = []
+        open_spans: list[dict] = []
+        prev_mcid = None  # the last tagged line BEFORE the selection, in stream order
+        next_existing = None  # ...and the first one AFTER it
+        for idx, (operands, op) in enumerate(instructions):
+            s = str(op)
+            if s in ("BDC", "BMC"):
+                is_mcid = (
+                    s == "BDC"
+                    and len(operands) == 2
+                    and isinstance(operands[1], pikepdf.Dictionary)
+                    and operands[1].get("/MCID") is not None
+                )
+                if is_mcid:
+                    value = int(operands[1].get("/MCID"))
+                    if idx < first_chosen:
+                        prev_mcid = value
+                    elif next_existing is None:
+                        next_existing = value
+                span = {"start": idx, "is_mcid": is_mcid, "paint": set(), "depth": len(open_spans)}
+                spans.append(span)
+                open_spans.append(span)
+            elif s == "EMC" and open_spans:
+                open_spans.pop()
+            elif idx in chosen:
+                if any(sp["is_mcid"] for sp in open_spans):
+                    raise ValueError(
+                        "part of the selection is already tagged - reload and try again"
+                    )
+                for sp in open_spans:
+                    sp["paint"].add(idx)
+        absorbed: dict[int, int] = {}  # span start idx -> its fresh MCID
+        covered: set[int] = set()
+        for span in spans:  # outermost first (list is in open order)
+            if span["is_mcid"] or not span["paint"] or not span["paint"] <= chosen:
+                continue
+            if span["start"] in covered:
+                continue  # nested inside an already-absorbed span
+            absorbed[span["start"]] = next_mcid
+            next_mcid += 1
+            covered |= span["paint"]
+            covered |= {
+                s2["start"]
+                for s2 in spans
+                if s2["depth"] > span["depth"] and s2["paint"] and s2["paint"] <= span["paint"]
+            }
+
+        out: list[bytes] = []
+        stack: list[tuple[bool, bytes]] = []  # every open span: (absorbed?, its opener)
+        new_mcids: list[int] = sorted(absorbed.values())
+        for idx, (operands, op) in enumerate(instructions):
+            token = pikepdf.unparse_content_stream([(operands, op)])
+            s = str(op)
+            if s in ("BDC", "BMC"):
+                if idx in absorbed:
+                    out.append(f"/{new_type} <</MCID {absorbed[idx]}>> BDC".encode())
+                    stack.append((True, token))
+                else:
+                    out.append(token)
+                    stack.append((False, token))
+                continue
+            if s == "EMC":
+                out.append(token)
+                if stack:
+                    stack.pop()
+                continue
+            if idx in chosen and idx not in covered:
+                # a chosen-but-not-covered op is never inside an absorbed span,
+                # so everything open here is a kept /Artifact span to step out of
+                reopen = [opener for _absorbed, opener in stack]
+                out.extend([b"EMC"] * len(reopen))
+                out.append(f"/{new_type} <</MCID {next_mcid}>> BDC".encode())
+                out.append(token)
+                out.append(b"EMC")
+                out.extend(reopen)
+                new_mcids.append(next_mcid)
+                next_mcid += 1
+            else:
+                out.append(token)
+        page.Contents = doc.make_stream(b"\n".join(out))
+
+        # a document stripped of all tags gets its structure root back here
+        root = doc.Root.get("/StructTreeRoot")
+        if root is None:
+            document = doc.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/Document")))
+            root = doc.make_indirect(
+                pikepdf.Dictionary(Type=pikepdf.Name.StructTreeRoot, K=document)
+            )
+            doc.Root.StructTreeRoot = root
+            doc.Root.MarkInfo = pikepdf.Dictionary(Marked=True)
+            document.P = root
+
+        element = doc.make_indirect(
+            pikepdf.Dictionary(
+                S=pikepdf.Name("/" + new_type),
+                Pg=page.obj,
+                K=pikepdf.Array(new_mcids),
+            )
+        )
+
+        # reading-order placement: right after the tag that owns the line just
+        # BEFORE the selection in drawing order (or before the one just after)
+        anchor_mcid, place_after = (
+            (prev_mcid, True) if prev_mcid is not None else (next_existing, False)
+        )
+        # containers with a STRICT content model: a bare paragraph placed inside
+        # one is itself a PDF/UA violation (e.g. 7.2-20: LI holds only Lbl and
+        # LBody), so the new tag climbs out to where a block element is legal.
+        strict = {"/L", "/LI", "/Lbl", "/Table", "/TR", "/THead", "/TBody", "/TFoot"}
+        strict |= {"/TOC", "/Ruby", "/Warichu"}
+        anchor = anchor_parent = None
+        if anchor_mcid is not None:
+            for _nid, candidate in _walk_elements(doc, pikepdf):
+                kids = candidate.get("/K")
+                if not isinstance(kids, pikepdf.Array):
+                    kids = [kids] if kids is not None else []
+                on_page = candidate.get("/Pg") is None or _objgen(candidate.get("/Pg")) == _objgen(
+                    page.obj
+                )
+                if on_page and any(_owns_mcid(kid, anchor_mcid, page.obj, pikepdf) for kid in kids):
+                    anchor = candidate
+                    break
+            if anchor is not None:
+                _found, anchor_parent = _find_with_parent_element(doc, pikepdf, anchor)
+                for _climb in range(50):
+                    if anchor_parent is None or str(anchor_parent.get("/S")) not in strict:
+                        break
+                    anchor = anchor_parent
+                    _found, anchor_parent = _find_with_parent_element(doc, pikepdf, anchor)
+        if anchor is not None:
+            kids, owner = _kid_list(anchor_parent, pikepdf, root)
+            index = len(kids)
+            for i, kid in enumerate(kids):
+                if _objgen(kid) == _objgen(anchor):
+                    index = i + 1 if place_after else i
+                    break
+            kids.insert(index, element)
+            element.P = owner
+        else:
+            holder = root.get("/K")
+            if _is_element(holder, pikepdf):  # a Document container: go inside it
+                kids, owner = _kid_list(holder, pikepdf, root)
+            else:
+                kids, owner = _kid_list(None, pikepdf, root)
+            kids.append(element)
+            element.P = owner
+
+        _ensure_parent_entry(doc, pikepdf, page, element, new_mcids)
+        _save_over(doc, pdf)
+    except BaseException:
+        doc.close()
+        raise
+    return {"tagged": len(new_mcids), "type": new_type}
+
+
+def _find_with_parent_element(doc, pikepdf, element):
+    """(element, parent) for an element we already hold (matched by objgen)."""
+    root = doc.Root.get("/StructTreeRoot")
+    target = _objgen(element)
+
+    def walk(node, parent):
+        if isinstance(node, pikepdf.Array):
+            for kid in node:
+                hit = walk(kid, parent)
+                if hit is not None:
+                    return hit
+            return None
+        if not _is_element(node, pikepdf):
+            return None
+        if _objgen(node) == target:
+            return node, parent
+        return walk(node.get("/K"), node) if node.get("/K") is not None else None
+
+    hit = walk(root.get("/K"), None) if root is not None else None
+    return hit if hit is not None else (None, None)
+
+
 def remove_all_tags(pdf: Path) -> dict:
     """Strip the whole structure tree and the tagged-PDF declaration, leaving an
     untagged (but visually identical) document -- the escape hatch when the
@@ -706,14 +1183,22 @@ def remove_all_tags(pdf: Path) -> dict:
     return {"had_tags": had}
 
 
-def _mcid_boxes(doc) -> list[dict[int, tuple[float, float, float, float]]]:
-    """Per page: MCID -> union bounding box, read from the content marks pdfium
-    exposes on every page object (the same data a viewer uses for highlights)."""
+# pdfium page-object types worth offering for tagging (paths/shading are
+# almost always graphic furniture; text, images and form XObjects are content)
+_TAGGABLE_KINDS = {1: "text", 3: "image", 5: "form"}
+
+
+def _page_geometry(doc):
+    """Per page, from pdfium's object list (drawing order): the MCID -> union
+    bounding box map every highlight uses, AND the objects that carry NO MCID
+    mark at all -- the untagged content the drag tool can wrap in a new tag."""
     import pypdfium2.raw as raw
 
-    per_page: list[dict[int, tuple[float, float, float, float]]] = []
-    for page in doc:
+    mcid_boxes: list[dict[int, tuple[float, float, float, float]]] = []
+    untagged: list[list[UntaggedRef]] = []
+    for pageno, page in enumerate(doc):
         boxes: dict[int, tuple[float, float, float, float]] = {}
+        loose: list[UntaggedRef] = []
         for i in range(raw.FPDFPage_CountObjects(page.raw)):
             obj = raw.FPDFPage_GetObject(page.raw, i)
             left = ctypes.c_float()
@@ -728,12 +1213,14 @@ def _mcid_boxes(doc) -> list[dict[int, tuple[float, float, float, float]]]:
                 ctypes.byref(top),
             ):
                 continue
+            box = (left.value, bottom.value, right.value, top.value)
+            has_mcid = False
             for m in range(raw.FPDFPageObj_CountMarks(obj)):
                 mark = raw.FPDFPageObj_GetMark(obj, m)
                 mcid = ctypes.c_int(-1)
                 if not raw.FPDFPageObjMark_GetParamIntValue(mark, b"MCID", ctypes.byref(mcid)):
                     continue
-                box = (left.value, bottom.value, right.value, top.value)
+                has_mcid = True
                 prev = boxes.get(mcid.value)
                 boxes[mcid.value] = (
                     box
@@ -745,8 +1232,12 @@ def _mcid_boxes(doc) -> list[dict[int, tuple[float, float, float, float]]]:
                         max(prev[3], box[3]),
                     )
                 )
-        per_page.append(boxes)
-    return per_page
+            kind = _TAGGABLE_KINDS.get(raw.FPDFPageObj_GetType(obj))
+            if not has_mcid and kind is not None and box[2] > box[0] and box[3] > box[1]:
+                loose.append(UntaggedRef(page=pageno, index=i, box=list(box), kind=kind))
+        mcid_boxes.append(boxes)
+        untagged.append(loose)
+    return mcid_boxes, untagged
 
 
 def _union(a: list[float] | None, b: list[float] | None) -> list[float] | None:
@@ -774,14 +1265,15 @@ def structure_tree(pdf: Path) -> StructureTree:
 def _structure_tree_unlocked(pdf: Path, pikepdf, pdfium) -> StructureTree:
     fpdf = pdfium.PdfDocument(str(pdf))
     try:
-        geo = _mcid_boxes(fpdf)
+        geo, untagged_pages = _page_geometry(fpdf)
+        loose = [ref for page_refs in untagged_pages for ref in page_refs]
         sizes = [PageSize(width=p.get_size()[0], height=p.get_size()[1]) for p in fpdf]
         textpages = [p.get_textpage() for p in fpdf]
 
         with pikepdf.open(pdf) as doc:
             root = doc.Root.get("/StructTreeRoot")
             if root is None:
-                return StructureTree(tagged=False, pages=sizes)
+                return StructureTree(tagged=False, pages=sizes, untagged=loose)
             page_index = {}
             for i, page in enumerate(doc.pages):
                 page_obj = getattr(page, "obj", page)
@@ -833,6 +1325,7 @@ def _structure_tree_unlocked(pdf: Path, pikepdf, pdfium) -> StructureTree:
                         kids_nodes.extend(walk(kid, own_page))
 
                 node_page: int | None = None
+                lines: list[LineRef] = []
                 for pg, mcid in mcids:
                     if pg is None or not (0 <= pg < len(geo)):
                         continue
@@ -840,6 +1333,7 @@ def _structure_tree_unlocked(pdf: Path, pikepdf, pdfium) -> StructureTree:
                     if box is not None:
                         own_box = _union(own_box, list(box))
                         node_page = pg if node_page is None else node_page
+                        lines.append(LineRef(page=pg, mcid=mcid, box=list(box)))
                 # a container's page/box comes from its children when it has no
                 # direct content of its own (so clicking "List" highlights it all).
                 box_all = own_box
@@ -871,6 +1365,7 @@ def _structure_tree_unlocked(pdf: Path, pikepdf, pdfium) -> StructureTree:
                         page=node_page,
                         box=box_all,
                         text=text,
+                        lines=lines,
                         kids=kids_nodes,
                     )
                 ]
@@ -883,6 +1378,12 @@ def _structure_tree_unlocked(pdf: Path, pikepdf, pdfium) -> StructureTree:
                 return [kids]
 
             tree = walk(root.get("/K"), None)
-            return StructureTree(tagged=True, pages=sizes, root=tree, truncated=state["truncated"])
+            return StructureTree(
+                tagged=True,
+                pages=sizes,
+                root=tree,
+                truncated=state["truncated"],
+                untagged=loose,
+            )
     finally:
         fpdf.close()

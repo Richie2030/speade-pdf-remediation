@@ -297,6 +297,30 @@ class SpeadeApi:
         except Exception as exc:
             return {"error": f"could not apply the change: {str(exc)[:120]}"}
 
+    def carve_tag(self, file: str, picks: list, new_type: str) -> dict:
+        """Carve selected lines out of their tags into one new tag."""
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
+        try:
+            return service.carve_tag(pdf, list(picks), new_type, self._config_path)
+        except (ValueError, LookupError) as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            return {"error": f"could not carve the new tag: {str(exc)[:120]}"}
+
+    def tag_untagged(self, file: str, page: int, indexes: list, new_type: str) -> dict:
+        """Give untagged content a brand-new tag (the drag tool's third grain)."""
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
+        try:
+            return service.tag_untagged(pdf, int(page), list(indexes), new_type, self._config_path)
+        except (ValueError, LookupError) as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            return {"error": f"could not tag the selection: {str(exc)[:120]}"}
+
     def unwrap_tag(self, file: str, node_id: int) -> dict:
         """Remove one tag but keep its contents (unwrap a bogus wrapper)."""
         pdf = self._resolve(file)

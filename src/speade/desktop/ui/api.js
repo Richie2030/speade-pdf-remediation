@@ -36,6 +36,9 @@ const api = {
   moveTag: (file, nodeId, delta) => bridge("move_tag", file, nodeId, delta),
   bulkEdit: (file, action, nodeIds, newType) =>
     bridge("bulk_edit", file, action, nodeIds, newType || null),
+  carveTag: (file, picks, newType) => bridge("carve_tag", file, picks, newType),
+  tagUntagged: (file, page, indexes, newType) =>
+    bridge("tag_untagged", file, page, indexes, newType),
   unwrapTag: (file, nodeId) => bridge("unwrap_tag", file, nodeId),
   undoLastEdit: (file) => bridge("undo_last_edit", file),
   removeAllTags: (file) => bridge("remove_all_tags", file),

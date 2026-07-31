@@ -176,6 +176,15 @@ main { flex: 1; display: flex; min-height: 0; }
   border: 2.5px solid var(--ucc-navy); background: rgba(0, 60, 100, .16); z-index: 2;
 }
 .tnode.bulksel { background: #e2ecf5; outline: 2px solid var(--ucc-navy); }
+.linesel {
+  position: absolute; z-index: 2; pointer-events: none; border-radius: 1px;
+  outline: 2px solid var(--ucc-yellow-dark); background: rgba(255, 184, 28, .22);
+}
+.unsel {
+  position: absolute; z-index: 2; pointer-events: none; border-radius: 1px;
+  outline: 2px dashed var(--bad); background: rgba(168, 50, 44, .12);
+}
+#bulk-bar button:disabled { opacity: .45; }
 #bulk-bar {
   position: sticky; top: 0; z-index: 5;
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
@@ -234,6 +243,14 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 .editor-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .editor-row label { font-size: 15px; font-weight: 600; }
+/* one row of labelled clusters (Tag type | Reading order | Remove); the wide
+   description field gets the full second row. Clusters wrap whole on narrow
+   windows instead of splitting a label from its buttons. */
+#editor-main { column-gap: 16px; row-gap: 8px; }
+.editor-group { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
+#editor-main select { max-width: 180px; }
+#tag-editor #editor-main button { padding: 6px 10px; }
+#alt-row input { flex: 1 1 260px; min-width: 200px; }
 #tag-editor select, #tag-editor input {
   font: inherit; font-size: 16px; padding: 6px 10px; min-height: 40px;
   border: 2px solid var(--ucc-navy); border-radius: 8px; background: #fff;

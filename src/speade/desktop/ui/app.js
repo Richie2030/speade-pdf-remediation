@@ -15,7 +15,11 @@ let showLinks = false; // inline links hidden by default (see isHiddenLink)
 let selectedNode = null; // the tag currently open in the editor
 let tagTypes = []; // assignable tag types, from the backend
 let boxesByPage = []; // leaf tags per page, for marquee hit-testing
-let bulkSelected = []; // tags captured by the last marquee drag
+let linesByPage = []; // individual lines per page, for carving out a new tag
+let untaggedByPage = []; // content with NO tag at all, taggable by a drag
+let bulkSelected = []; // whole tags captured by the last marquee drag
+let bulkLines = []; // individual lines captured by the last marquee drag
+let bulkUntagged = []; // untagged pieces captured by the last marquee drag
 
 // ------------------------------------------------- plain-language dictionaries
 const STATUS_TEXT = {
@@ -346,7 +350,11 @@ async function loadStructure(file, retrying = false) {
   $("show-links").checked = showLinks;
   if (!tree.tagged) {
     $("tag-tree").innerHTML =
-      '<div class="muted">No tags yet - this document has no accessibility structure.</div>';
+      '<div class="muted">No tags yet - this document has no accessibility structure.' +
+      ((tree.untagged || []).length
+        ? " Drag a rectangle over content on the pages to start tagging it."
+        : "") +
+      "</div>";
   } else {
     renderTree();
   }
@@ -373,6 +381,17 @@ function collectLeafBoxes(nodes, out) {
     if (isHiddenLink(node)) continue;
     if (node.kids.length) collectLeafBoxes(node.kids, out);
     else if (node.box && node.page !== null) (out[node.page] ||= []).push(node);
+  }
+}
+
+// every individual line any tag owns, grouped by page -- the carve tool's grain.
+function collectLines(nodes) {
+  for (const node of nodes) {
+    if (isHiddenLink(node)) continue;
+    for (const line of node.lines || []) {
+      (linesByPage[line.page] ||= []).push({ node, mcid: line.mcid, box: line.box, page: line.page });
+    }
+    collectLines(node.kids);
   }
 }
 
@@ -404,7 +423,15 @@ function renderPageStack(file) {
   stack.innerHTML = "";
   clearBulkSelection();
   boxesByPage = [];
-  if (structTree.tagged) collectLeafBoxes(structTree.root, boxesByPage);
+  linesByPage = [];
+  untaggedByPage = [];
+  if (structTree.tagged) {
+    collectLeafBoxes(structTree.root, boxesByPage);
+    collectLines(structTree.root);
+  }
+  for (const piece of structTree.untagged || []) {
+    (untaggedByPage[piece.page] ||= []).push(piece);
+  }
   const bands = [];
   structTree.pages.forEach((size, i) => {
     const band = document.createElement("div");
@@ -526,7 +553,9 @@ function renderTree() {
 // order across pages is what the tree is for.
 
 function startMarquee(e, band, pageIndex, size) {
-  if (e.button !== 0 || !structTree || !structTree.tagged) return;
+  // untagged documents still get the marquee: dragging is how they get tags back
+  if (e.button !== 0 || !structTree) return;
+  if (!structTree.tagged && !(structTree.untagged || []).length) return;
   e.preventDefault(); // no native image drag, no text selection
   const rect = band.getBoundingClientRect();
   const x0 = e.clientX - rect.left;
@@ -572,7 +601,9 @@ function startMarquee(e, band, pageIndex, size) {
       size.height - (py0 / rect.height) * size.height,
     ];
     setBulkSelection(
-      (boxesByPage[pageIndex] || []).filter((node) => boxCovered(node.box, sel))
+      (boxesByPage[pageIndex] || []).filter((node) => boxCovered(node.box, sel)),
+      (linesByPage[pageIndex] || []).filter((line) => boxCovered(line.box, sel, 0.5)),
+      (untaggedByPage[pageIndex] || []).filter((piece) => boxCovered(piece.box, sel, 0.5))
     );
   };
 
@@ -580,31 +611,64 @@ function startMarquee(e, band, pageIndex, size) {
   document.addEventListener("mouseup", onUp);
 }
 
-// selected when at least 40% of the tag's box falls inside the rectangle: a
-// sloppy drag still catches whole lines without grabbing barely-touched ones.
-function boxCovered(box, sel) {
+// selected when at least `need` of the box's area falls inside the rectangle:
+// a sloppy drag still catches whole lines without grabbing barely-touched ones.
+function boxCovered(box, sel, need = 0.4) {
   const w = Math.min(box[2], sel[2]) - Math.max(box[0], sel[0]);
   const h = Math.min(box[3], sel[3]) - Math.max(box[1], sel[1]);
   if (w <= 0 || h <= 0) return false;
   const area = (box[2] - box[0]) * (box[3] - box[1]);
-  return area <= 0 || (w * h) / area >= 0.4;
+  return area <= 0 || (w * h) / area >= need;
 }
 
-function setBulkSelection(nodes) {
+function setBulkSelection(nodes, lines, loose) {
   clearBulkSelection();
-  if (nodes.length < 2) {
-    // one tag needs no bulk bar -- open it in the ordinary editor instead
+  lines = lines || [];
+  loose = loose || [];
+  // a drag that amounts to "this one whole tag" opens the ordinary editor
+  const wholeSingle =
+    nodes.length === 1 &&
+    loose.length === 0 &&
+    lines.every((l) => l.node.id === nodes[0].id) &&
+    lines.length >= (nodes[0].lines || []).length;
+  if (wholeSingle || (nodes.length === 0 && lines.length === 0 && loose.length === 0)) {
     if (nodes.length === 1) selectNode(nodes[0], { scrollTree: true });
     return;
   }
-  bulkSelected = nodes;
-  for (const node of nodes) {
+  bulkSelected = nodes.length >= 2 ? nodes : [];
+  bulkLines = lines;
+  bulkUntagged = loose;
+  for (const node of bulkSelected) {
     if (node.__box) node.__box.classList.add("bulksel");
     if (node.__row) node.__row.classList.add("bulksel");
   }
+  // individual highlights show EXACTLY what an action would take: yellow for
+  // tagged lines (carve), dashed red for content that has no tag yet
+  for (const [list, cls] of [
+    [lines, "linesel"],
+    [loose, "unsel"],
+  ]) {
+    for (const piece of list) {
+      const band = $("page-stack").querySelector(`.pageband[data-page="${piece.page}"]`);
+      if (!band || !structTree) continue;
+      const mark = document.createElement("div");
+      mark.className = cls;
+      boxStyle(mark, piece.box, structTree.pages[piece.page]);
+      band.appendChild(mark);
+    }
+  }
   const bar = $("bulk-bar");
   bar.hidden = false;
-  $("bulk-count").textContent = `${nodes.length} tags selected`;
+  const parts = [];
+  if (bulkSelected.length >= 2) parts.push(`${bulkSelected.length} tags`);
+  if (lines.length) parts.push(`${lines.length} line${lines.length === 1 ? "" : "s"}`);
+  if (loose.length) parts.push(`${loose.length} untagged`);
+  $("bulk-count").textContent = parts.join(" · ") + " selected";
+  for (const id of ["bulk-merge", "bulk-retag", "bulk-deco"]) {
+    $(id).disabled = bulkSelected.length < 2;
+  }
+  $("bulk-carve").disabled = lines.length === 0;
+  $("bulk-tag").disabled = loose.length === 0;
   const select = $("bulk-type");
   if (!select.options.length) {
     for (const t of tagTypes) {
@@ -619,13 +683,23 @@ function setBulkSelection(nodes) {
 
 function clearBulkSelection() {
   bulkSelected = [];
+  bulkLines = [];
+  bulkUntagged = [];
   $("bulk-bar").hidden = true;
   document.querySelectorAll(".bulksel").forEach((el) => el.classList.remove("bulksel"));
+  document.querySelectorAll(".linesel, .unsel").forEach((el) => el.remove());
 }
 
 async function runBulk(action) {
-  if (bulkSelected.length < 2) return;
-  const n = bulkSelected.length;
+  const armed = {
+    carve: bulkLines.length > 0,
+    tagnew: bulkUntagged.length > 0,
+    merge: bulkSelected.length >= 2,
+    retag: bulkSelected.length >= 2,
+    decorative: bulkSelected.length >= 2,
+  }[action];
+  if (!armed) return;
+  const n = { carve: bulkLines.length, tagnew: bulkUntagged.length }[action] || bulkSelected.length;
   const newType = $("bulk-type").value || "P";
   if (action === "decorative") {
     const withText = bulkSelected.filter((s) => s.text && s.text.trim().length > 3).length;
@@ -640,10 +714,27 @@ async function runBulk(action) {
       return;
     }
   }
-  for (const id of ["bulk-merge", "bulk-retag", "bulk-deco"]) $(id).disabled = true;
+  const buttons = ["bulk-merge", "bulk-retag", "bulk-deco", "bulk-carve", "bulk-tag"];
+  for (const id of buttons) $(id).disabled = true;
   setStatus("Applying to the selection…");
-  const result = await api.bulkEdit(selected, action, bulkSelected.map((s) => s.id), newType);
-  for (const id of ["bulk-merge", "bulk-retag", "bulk-deco"]) $(id).disabled = false;
+  let result;
+  if (action === "carve") {
+    result = await api.carveTag(
+      selected,
+      bulkLines.map((l) => ({ node_id: l.node.id, mcid: l.mcid })),
+      newType
+    );
+  } else if (action === "tagnew") {
+    result = await api.tagUntagged(
+      selected,
+      bulkUntagged[0].page,
+      bulkUntagged.map((p) => p.index),
+      newType
+    );
+  } else {
+    result = await api.bulkEdit(selected, action, bulkSelected.map((s) => s.id), newType);
+  }
+  for (const id of buttons) $(id).disabled = false;
   if (result.error) {
     setStatus(result.error);
     return;
@@ -652,6 +743,8 @@ async function runBulk(action) {
     merge: `${n} tags merged into one ${typeText(newType)}`,
     retag: `${n} tags changed to ${typeText(newType)}`,
     decorative: `${n} tags marked decorative`,
+    carve: `${n} line${n === 1 ? "" : "s"} carved into a new ${typeText(newType)}`,
+    tagnew: `${n} untagged piece${n === 1 ? "" : "s"} tagged as ${typeText(newType)}`,
   }[action];
   const verdict = result.verapdf_passed
     ? "automatic check now passes"
@@ -686,6 +779,10 @@ function showEditor(node) {
   // a description belongs on pictures; offer it there (and on anything that
   // already carries one) rather than on every paragraph.
   $("alt-row").hidden = !(node.type === "Figure" || node.type === "Formula" || node.alt);
+  // "Remove tag, keep contents" only works on WRAPPERS (the backend refuses a
+  // tag that holds content directly) -- so only show it where it applies,
+  // instead of making the reviewer choose between two remove-ish buttons.
+  $("unwrap-tag").hidden = (node.lines || []).length > 0;
 }
 
 async function afterEdit(result, message) {
@@ -762,7 +859,8 @@ async function markDecorative() {
       `This ${what} contains text:\n\n"${selectedNode.text.slice(0, 120)}"\n\n` +
         "Marking it decorative removes it from the reading order, so a screen " +
         "reader will not read it out. Do that only for decoration (borders, " +
-        "page numbers, background scans).\n\nContinue?"
+        "page numbers, background scans).\n\nTo bring it back later: Undo last " +
+        "change, or drag over it and use Tag untagged.\n\nContinue?"
     );
     if (!ok) return;
   }
@@ -1094,6 +1192,8 @@ async function init() {
   $("bulk-merge").onclick = () => runBulk("merge");
   $("bulk-retag").onclick = () => runBulk("retag");
   $("bulk-deco").onclick = () => runBulk("decorative");
+  $("bulk-carve").onclick = () => runBulk("carve");
+  $("bulk-tag").onclick = () => runBulk("tagnew");
   $("bulk-clear").onclick = clearBulkSelection;
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;

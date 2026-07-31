@@ -75,6 +75,8 @@
               <button id="bulk-merge" title="The selected tags become ONE tag of the chosen type, contents kept in reading order">Merge into one</button>
               <button id="bulk-retag" title="Every selected tag becomes the chosen type">Change all</button>
               <button id="bulk-deco" title="Every selected tag leaves the reading order (no description needed)">Mark all decorative</button>
+              <button id="bulk-carve" title="The selected lines leave their current tags and become one NEW tag of the chosen type - e.g. a heading the app swallowed into a paragraph">New tag from lines</button>
+              <button id="bulk-tag" title="Give the selected UNTAGGED content (dashed red) a brand-new tag of the chosen type - for text the app missed, or content that was marked decorative">Tag untagged</button>
               <button id="bulk-clear">Clear</button>
             </div>
             <div id="page-stack"></div>
@@ -86,26 +88,28 @@
           <div class="editor-row">
             <span id="editor-what" class="muted"></span>
           </div>
-          <div class="editor-row">
-            <label for="tag-type">Tag type</label>
-            <select id="tag-type"></select>
-            <button id="save-tag-type">Change tag</button>
+          <div class="editor-row" id="editor-main">
+            <span class="editor-group">
+              <label for="tag-type">Tag type</label>
+              <select id="tag-type"></select>
+              <button id="save-tag-type" title="Change this tag to the chosen type">Change</button>
+            </span>
+            <span class="editor-group">
+              <label>Reading order</label>
+              <button id="move-earlier" title="Move this tag earlier in the reading order">&uarr; Earlier</button>
+              <button id="move-later" title="Move this tag later in the reading order">&darr; Later</button>
+            </span>
+            <span class="editor-group">
+              <label>Remove</label>
+              <button id="unwrap-tag" title="Delete this tag but keep what is inside it in the reading order, for a wrapper that should not be there">Remove tag, keep contents</button>
+              <button id="make-decorative" title="Take it out of the reading order and mark the content as decoration, so it needs no description">Mark as decorative</button>
+            </span>
           </div>
           <div class="editor-row" id="alt-row">
             <label for="figure-alt">Image description</label>
             <input id="figure-alt" type="text"
                    placeholder="What the image shows and why it matters">
             <button id="save-alt">Save description</button>
-          </div>
-          <div class="editor-row">
-            <label>Reading order</label>
-            <button id="move-earlier">&uarr; Move earlier</button>
-            <button id="move-later">&darr; Move later</button>
-          </div>
-          <div class="editor-row">
-            <label>Remove</label>
-            <button id="unwrap-tag" title="Delete this tag but keep what is inside it in the reading order, for a wrapper that should not be there">Remove tag, keep contents</button>
-            <button id="make-decorative" title="Take it out of the reading order and mark the content as decoration, so it needs no description">Mark as decorative</button>
           </div>
           <div id="editor-result" class="muted"></div>
         </div>
@@ -221,11 +225,18 @@
           <li><b>Many tags</b> — <b>drag a rectangle on a page</b>, like Acrobat.
             The bar that appears can <i>merge them into one tag</i> (the fix for
             over-fragmented text), <i>change all</i>, or <i>mark all decorative</i>.</li>
+          <li><b>Part of a tag</b> — drag over just some of its lines and
+            <i>New tag from lines</i> carves them out into their own tag — the
+            fix for a heading swallowed into the top of a paragraph.</li>
+          <li><b>Untagged content</b> — anything with no box at all (missed
+            text, or something marked decorative) shows a dashed red highlight
+            when you drag over it; <i>Tag untagged</i> gives it a brand-new
+            tag. Decorative is therefore reversible.</li>
           <li><b>Undo</b> — <i>Undo last change</i> steps back one edit at a time;
             <i>Undo all edits</i> starts over from the original. Every edit re-runs
             the automatic check and is recorded in History.</li>
-          <li>Still Acrobat's job: splitting one tag into several, tagging content
-            that has no tag at all, and table header cells.</li>
+          <li>Still Acrobat's job: selecting part of a single line and table
+            header cells.</li>
         </ul>
 
         <h3>Common questions</h3>

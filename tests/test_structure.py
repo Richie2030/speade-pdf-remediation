@@ -421,6 +421,264 @@ def test_make_decorative_clears_its_parent_tree_entry(tmp_path):
         assert kept.objgen == survivor.objgen
 
 
+def _multiline_para_pdf(tmp_path, name="lines.pdf"):
+    """Document > one P owning TWO lines (MCID 0 'A HEADING', MCID 1 'body
+    text') -- the engine-swallowed-a-heading shape the carve tool exists for."""
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(612, 792))
+    page.Resources = pikepdf.Dictionary(
+        Font=pikepdf.Dictionary(
+            F1=pikepdf.Dictionary(
+                Type=pikepdf.Name.Font,
+                Subtype=pikepdf.Name.Type1,
+                BaseFont=pikepdf.Name.Helvetica,
+            )
+        )
+    )
+    page.Contents = pdf.make_stream(
+        b"/P <</MCID 0>> BDC BT /F1 18 Tf 72 700 Td (A HEADING) Tj ET EMC\n"
+        b"/P <</MCID 1>> BDC BT /F1 12 Tf 72 680 Td (body text) Tj ET EMC"
+    )
+    para = pdf.make_indirect(
+        pikepdf.Dictionary(S=pikepdf.Name.P, K=pikepdf.Array([0, 1]), Pg=page.obj)
+    )
+    doc_elem = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/Document"), K=para))
+    page.StructParents = 0
+    pdf.Root.StructTreeRoot = pdf.make_indirect(
+        pikepdf.Dictionary(
+            Type=pikepdf.Name.StructTreeRoot,
+            K=doc_elem,
+            ParentTree=pdf.make_indirect(
+                pikepdf.Dictionary(Nums=pikepdf.Array([0, pikepdf.Array([para, para])]))
+            ),
+        )
+    )
+    out = tmp_path / name
+    pdf.save(out)
+    return out
+
+
+def test_carve_opening_line_lands_before_the_donor(tmp_path):
+    # the headline case: a heading swallowed into the paragraph below it --
+    # carving the FIRST line out must place the new tag ABOVE the paragraph.
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import carve_lines, structure_tree
+
+    out = _multiline_para_pdf(tmp_path)
+    para = structure_tree(out).root[0].kids[0]
+    assert [ln.mcid for ln in para.lines] == [0, 1]
+
+    result = carve_lines(out, [{"node_id": para.id, "mcid": 0}], "H2")
+
+    assert result == {"carved": 1, "from": 1, "emptied": 0, "type": "H2"}
+    kids = structure_tree(out).root[0].kids
+    assert [k.type for k in kids] == ["H2", "P"]  # heading now reads first
+    assert "A HEADING" in kids[0].text
+    assert "body text" in kids[1].text
+    with pikepdf.open(out) as doc:
+        heading, paragraph = doc.Root.StructTreeRoot.K.K
+        entries = _parent_tree_entries(doc)
+        # per-line lookup: line 0 -> the new H2, line 1 -> the old P
+        assert entries[0].objgen == heading.objgen
+        assert entries[1].objgen == paragraph.objgen
+
+
+def test_carve_trailing_line_lands_after_and_empty_donor_is_removed(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import carve_lines, structure_tree
+
+    out = _multiline_para_pdf(tmp_path, "trail.pdf")
+    para = structure_tree(out).root[0].kids[0]
+
+    carve_lines(out, [{"node_id": para.id, "mcid": 1}], "Caption")
+    kids = structure_tree(out).root[0].kids
+    assert [k.type for k in kids] == ["P", "Caption"]  # trailing line goes below
+
+    # now carve the paragraph's ONLY remaining line: the hollow tag must go
+    para2 = structure_tree(out).root[0].kids[0]
+    result = carve_lines(out, [{"node_id": para2.id, "mcid": 0}], "H3")
+    assert result["emptied"] == 1
+    assert [k.type for k in structure_tree(out).root[0].kids] == ["H3", "Caption"]
+
+    with pytest.raises(LookupError, match="does not contain line"):
+        carve_lines(out, [{"node_id": 0, "mcid": 99}], "P")
+
+
+def _partially_tagged_pdf(tmp_path, name="missed.pdf"):
+    """One tagged P (MCID 0) followed by a line the engine MISSED entirely --
+    the untagged-content shape the 'Tag untagged' drag action exists for."""
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(612, 792))
+    page.Resources = pikepdf.Dictionary(
+        Font=pikepdf.Dictionary(
+            F1=pikepdf.Dictionary(
+                Type=pikepdf.Name.Font,
+                Subtype=pikepdf.Name.Type1,
+                BaseFont=pikepdf.Name.Helvetica,
+            )
+        )
+    )
+    page.Contents = pdf.make_stream(
+        b"/P <</MCID 0>> BDC BT /F1 12 Tf 72 700 Td (tagged line) Tj ET EMC\n"
+        b"BT /F1 12 Tf 72 680 Td (missed line) Tj ET"
+    )
+    para = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name.P, K=0, Pg=page.obj))
+    doc_elem = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/Document"), K=para))
+    page.StructParents = 0
+    pdf.Root.StructTreeRoot = pdf.make_indirect(
+        pikepdf.Dictionary(
+            Type=pikepdf.Name.StructTreeRoot,
+            K=doc_elem,
+            ParentTree=pdf.make_indirect(
+                pikepdf.Dictionary(Nums=pikepdf.Array([0, pikepdf.Array([para])]))
+            ),
+        )
+    )
+    out = tmp_path / name
+    pdf.save(out)
+    return out
+
+
+def test_tag_objects_wraps_engine_missed_text(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import structure_tree, tag_objects
+
+    out = _partially_tagged_pdf(tmp_path)
+    tree = structure_tree(out)
+    assert [(u.kind, u.index) for u in tree.untagged] == [("text", 1)]
+
+    result = tag_objects(out, 0, [1], "H2")
+
+    assert result == {"tagged": 1, "type": "H2"}
+    after = structure_tree(out)
+    assert after.untagged == []  # nothing left unreachable
+    kids = after.root[0].kids
+    assert [k.type for k in kids] == ["P", "H2"]  # placed after its neighbour
+    assert "missed line" in kids[1].text
+    with pikepdf.open(out) as doc:
+        content = doc.pages[0].Contents.read_bytes()
+        assert b"/H2 <</MCID 1>> BDC" in content.replace(b"\n", b" ")
+        # the per-line lookup table gained a correct entry for the new line
+        paragraph, heading = doc.Root.StructTreeRoot.K.K
+        entries = list(doc.Root.StructTreeRoot.ParentTree.Nums[1])
+        assert entries[0].objgen == paragraph.objgen
+        assert entries[1].objgen == heading.objgen
+
+    with pytest.raises(ValueError, match="already tagged"):
+        tag_objects(out, 0, [0], "P")
+
+
+def test_decorative_then_tag_untagged_is_a_true_roundtrip(tmp_path):
+    # the reviewer's mistake case: decorated by accident, undo history gone --
+    # the drag tool must be able to bring the content back as real content,
+    # by converting the artifact wrapper back in place (no nested marking).
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import make_decorative, structure_tree, tag_objects
+
+    out = _two_para_pdf(tmp_path, "roundtrip.pdf")
+    second = structure_tree(out).root[0].kids[1]
+    make_decorative(out, second.id)
+
+    between = structure_tree(out)
+    assert [k.type for k in between.root[0].kids] == ["P"]
+    assert [(u.kind, u.index) for u in between.untagged] == [("text", 1)]
+
+    result = tag_objects(out, 0, [1], "P")
+
+    assert result == {"tagged": 1, "type": "P"}
+    after = structure_tree(out)
+    assert [k.type for k in after.root[0].kids] == ["P", "P"]
+    assert "second line" in after.root[0].kids[1].text
+    with pikepdf.open(out) as doc:
+        content = doc.pages[0].Contents.read_bytes()
+        assert b"/Artifact" not in content  # the wrapper was converted, not nested
+        # the freed line number is reused: exactly the state decorating undid
+        assert b"/P <</MCID 1>> BDC" in content.replace(b"\n", b" ")
+        first, second_again = doc.Root.StructTreeRoot.K.K
+        entries = _parent_tree_entries(doc)
+        assert entries[0].objgen == first.objgen
+        assert entries[1].objgen == second_again.objgen  # no dangling null left
+
+
+def test_tag_objects_climbs_out_of_strict_containers(tmp_path):
+    # caught live by veraPDF (7.2-20): when the neighbouring line lives inside
+    # a list, the new tag must NOT land inside the LI (which admits only Lbl
+    # and LBody) -- it climbs out beside the whole list instead.
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import structure_tree, tag_objects
+
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(612, 792))
+    page.Resources = pikepdf.Dictionary(
+        Font=pikepdf.Dictionary(
+            F1=pikepdf.Dictionary(
+                Type=pikepdf.Name.Font,
+                Subtype=pikepdf.Name.Type1,
+                BaseFont=pikepdf.Name.Helvetica,
+            )
+        )
+    )
+    page.Contents = pdf.make_stream(
+        b"/LBody <</MCID 0>> BDC BT /F1 12 Tf 72 700 Td (list entry) Tj ET EMC\n"
+        b"BT /F1 12 Tf 72 680 Td (missed after the list) Tj ET"
+    )
+    lbody = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/LBody"), K=0, Pg=page.obj))
+    li = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/LI"), K=lbody))
+    the_list = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name.L, K=li))
+    doc_elem = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/Document"), K=the_list))
+    pdf.Root.StructTreeRoot = pdf.make_indirect(
+        pikepdf.Dictionary(Type=pikepdf.Name.StructTreeRoot, K=doc_elem)
+    )
+    out = tmp_path / "inlist.pdf"
+    pdf.save(out)
+
+    tag_objects(out, 0, [1], "P")
+
+    document = structure_tree(out).root[0]
+    # beside the list under Document -- NOT inside the LI
+    assert [k.type for k in document.kids] == ["L", "P"]
+    assert "missed after the list" in document.kids[1].text
+    the_li = document.kids[0].kids[0]
+    assert [k.type for k in the_li.kids] == ["LBody"]
+
+
+def test_tag_objects_rebuilds_a_fully_untagged_document(tmp_path):
+    # after "Remove all tags", dragging must be able to start a fresh tree
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation.structure import structure_tree, tag_objects
+
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(612, 792))
+    page.Resources = pikepdf.Dictionary(
+        Font=pikepdf.Dictionary(
+            F1=pikepdf.Dictionary(
+                Type=pikepdf.Name.Font,
+                Subtype=pikepdf.Name.Type1,
+                BaseFont=pikepdf.Name.Helvetica,
+            )
+        )
+    )
+    page.Contents = pdf.make_stream(b"BT /F1 14 Tf 72 700 Td (bare text) Tj ET")
+    out = tmp_path / "bare.pdf"
+    pdf.save(out)
+
+    before = structure_tree(out)
+    assert before.tagged is False
+    assert len(before.untagged) == 1
+
+    tag_objects(out, 0, [0], "P")
+
+    after = structure_tree(out)
+    assert after.tagged is True
+    (document,) = after.root
+    assert document.type == "Document"
+    assert [k.type for k in document.kids] == ["P"]
+    assert "bare text" in document.kids[0].text
+    with pikepdf.open(out) as doc:
+        assert bool(doc.Root.MarkInfo.Marked) is True
+        assert "/ParentTree" in doc.Root.StructTreeRoot  # created from nothing
+
+
 def test_structure_tree_untagged_pdf(tmp_path):
     pytest.importorskip("pypdfium2", reason="needs --extra ocr")
     from speade.validation.structure import structure_tree

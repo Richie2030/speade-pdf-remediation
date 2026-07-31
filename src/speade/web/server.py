@@ -75,6 +75,24 @@ class BulkBody(BaseModel):
     new_type: str | None = None
 
 
+class CarvePick(BaseModel):
+    node_id: int
+    mcid: int
+
+
+class CarveBody(BaseModel):
+    file: str
+    picks: list[CarvePick]
+    new_type: str
+
+
+class TagNewBody(BaseModel):
+    file: str
+    page: int
+    indexes: list[int]
+    new_type: str
+
+
 def create_app(config_path: Path | None = None) -> FastAPI:
     cfg = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
     bridge = SpeadeApi(cfg)  # headless: no window; uploads replace the native dialog
@@ -181,6 +199,14 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     @app.post("/api/bulk_edit")
     def bulk_edit(body: BulkBody) -> dict:
         return bridge.bulk_edit(body.file, body.action, body.node_ids, body.new_type)
+
+    @app.post("/api/carve_tag")
+    def carve_tag(body: CarveBody) -> dict:
+        return bridge.carve_tag(body.file, [p.model_dump() for p in body.picks], body.new_type)
+
+    @app.post("/api/tag_untagged")
+    def tag_untagged(body: TagNewBody) -> dict:
+        return bridge.tag_untagged(body.file, body.page, body.indexes, body.new_type)
 
     @app.post("/api/unwrap_tag")
     def unwrap_tag(body: NodeBody) -> dict:

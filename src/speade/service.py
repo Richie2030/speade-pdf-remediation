@@ -648,6 +648,56 @@ def bulk_edit(
     return out
 
 
+def carve_tag(
+    pdf: Path,
+    picks: list[dict],
+    new_type: str,
+    config_path: Path = DEFAULT_CONFIG_PATH,
+) -> dict[str, Any]:
+    """Carve selected LINES out of their tags into one new tag of `new_type`
+    (each pick = {"node_id", "mcid"}) -- the drag tool's finer grain, for a
+    heading the engine swallowed into a paragraph. One snapshot, one save, one
+    veraPDF re-check, one audit event, one undo step."""
+    if not picks:
+        raise ValueError("nothing selected")
+    if new_type not in EDITABLE_TAG_TYPES:
+        raise ValueError(f"not an editable tag type: {new_type}")
+    ws = workspace(config_path)
+    with _edit_guard(ws, pdf):
+        result = structure.carve_lines(pdf, picks, new_type)
+    out = _after_edit(
+        ws,
+        pdf,
+        {"event": "edit-carve", "lines": result["carved"], "type": new_type},
+    )
+    out.update(result)
+    return out
+
+
+def tag_untagged(
+    pdf: Path,
+    page: int,
+    object_indexes: list[int],
+    new_type: str,
+    config_path: Path = DEFAULT_CONFIG_PATH,
+) -> dict[str, Any]:
+    """Wrap untagged drawn content (engine-missed text, or content previously
+    marked decorative) in one brand-new tag of `new_type`. One snapshot, one
+    save, one veraPDF re-check, one audit event, one undo step."""
+    if new_type not in EDITABLE_TAG_TYPES:
+        raise ValueError(f"not an editable tag type: {new_type}")
+    ws = workspace(config_path)
+    with _edit_guard(ws, pdf):
+        result = structure.tag_objects(pdf, int(page), object_indexes, new_type)
+    out = _after_edit(
+        ws,
+        pdf,
+        {"event": "edit-tag-new", "pieces": result["tagged"], "type": new_type},
+    )
+    out.update(result)
+    return out
+
+
 def remove_all_tags(pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
     """Strip the entire tag structure (the start-over escape hatch). The
     document stays visually identical and can be reprocessed or tagged from

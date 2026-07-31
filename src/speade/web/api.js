@@ -68,6 +68,10 @@ const api = {
       node_ids: nodeIds,
       new_type: newType || null,
     }),
+  carveTag: (file, picks, newType) =>
+    postJSON("/api/carve_tag", { file, picks, new_type: newType }),
+  tagUntagged: (file, page, indexes, newType) =>
+    postJSON("/api/tag_untagged", { file, page, indexes, new_type: newType }),
   unwrapTag: (file, nodeId) => postJSON("/api/unwrap_tag", { file, node_id: nodeId }),
   undoLastEdit: (file) => postJSON("/api/undo_last_edit", { file }),
   removeAllTags: (file) => postJSON("/api/remove_all_tags", { file }),
