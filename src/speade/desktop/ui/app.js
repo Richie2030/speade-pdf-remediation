@@ -2,6 +2,8 @@
 // (api.js); knows nothing about pywebview, HTTP, or Python.
 
 const $ = (id) => document.getElementById(id);
+// respect the OS "reduce motion" setting: jump instead of animating scrolls
+const SCROLL = matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
 let queue = [];
 let pending = []; // inbox files still waiting to be processed
 let selected = null;
@@ -104,6 +106,17 @@ function renderQueue() {
       (item.flags.length ? ` ${chip(item.flags.length + " note(s)", "flag")}` : "") +
       `</div>`;
     div.onclick = () => select(item.file);
+    // the queue must work without a mouse: focusable, named, Enter/Space opens
+    div.tabIndex = 0;
+    div.setAttribute("role", "button");
+    div.setAttribute("aria-label", `Open ${item.file} for review`);
+    if (selected === item.file) div.setAttribute("aria-current", "true");
+    div.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        select(item.file);
+      }
+    };
     box.appendChild(div);
   }
   if (!queue.length && !pending.length) {
@@ -178,15 +191,19 @@ const CLAUSE_TEXT = [
   ["5", "PDF/UA declaration missing"],
 ];
 
-function veraIssuesText(clauses) {
-  const labels = [];
+// One line per issue, ALWAYS as "code - what it means" (e.g. "7.3.2-1 - images
+// missing descriptions"), so the code and its explanation never separate --
+// the code is what Acrobat/IT conversations and docs/verapdf-clauses.md key on.
+function veraIssueLines(clauses) {
+  const groups = new Map(); // plain-language label -> the codes behind it
   for (const clause of clauses) {
     const hits = CLAUSE_TEXT.filter(([prefix]) => clause.startsWith(prefix));
     hits.sort((a, b) => b[0].length - a[0].length); // most specific match wins
-    const label = hits.length ? hits[0][1] : `rule ${clause}`;
-    if (!labels.includes(label)) labels.push(label);
+    const label = hits.length ? hits[0][1] : "see docs/verapdf-clauses.md";
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label).push(clause);
   }
-  return labels.join("; ");
+  return [...groups].map(([label, codes]) => `${codes.join(", ")} – ${label}`);
 }
 
 function structureText(s) {
@@ -223,9 +240,11 @@ async function renderDetail() {
 
   const clauses = item.verapdf_failed_clauses || [];
   const issueText = clauses.length
-    ? `${clauses.length} issue${clauses.length === 1 ? "" : "s"}: ` +
-      `${veraIssuesText(clauses)} - fix in Acrobat, or use your judgement` +
-      ` <span class="muted">(${clauses.join(", ")})</span>`
+    ? `${clauses.length} issue${clauses.length === 1 ? "" : "s"} - ` +
+      "fix in the app or Acrobat, or use your judgement:" +
+      veraIssueLines(clauses)
+        .map((line) => `<br><span class="issue-line">${line}</span>`)
+        .join("")
     : "found issues";
   $("facts").innerHTML =
     `<dt>Processed</dt><dd>${processedText(item)}</dd>` +
@@ -534,9 +553,35 @@ function renderTree() {
       };
       node.__row = row; // page-box clicks find their way back to this row
       row.onclick = () => selectNode(node);
+      // keyboard: one Tab stop for the whole tree (roving tabindex), arrows
+      // move between rows, Enter/Space opens the tag in the editor
+      row.tabIndex = -1;
+      row.setAttribute("role", "button");
+      row.setAttribute(
+        "aria-label",
+        typeText(node.type) + (text.textContent ? `: ${text.textContent}` : "")
+      );
+      row.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          selectNode(node);
+        } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          e.preventDefault();
+          const rows = [...box.querySelectorAll(".tnode")].filter((r) => r.offsetParent);
+          const at = rows.indexOf(row);
+          const next = rows[at + (e.key === "ArrowDown" ? 1 : -1)];
+          if (next) {
+            row.tabIndex = -1;
+            next.tabIndex = 0;
+            next.focus();
+          }
+        }
+      };
     }
   };
   build(structTree.root, box);
+  const firstRow = box.querySelector(".tnode");
+  if (firstRow) firstRow.tabIndex = 0; // the tree's single Tab entry point
   if (structTree.truncated) {
     const more = document.createElement("div");
     more.className = "muted";
@@ -937,12 +982,18 @@ async function revertDocument() {
 
 function selectNode(node, opts = {}) {
   showEditor(node);
-  if (structSelectedRow) structSelectedRow.classList.remove("selected");
+  if (structSelectedRow) {
+    structSelectedRow.classList.remove("selected");
+    structSelectedRow.removeAttribute("aria-current");
+    structSelectedRow.tabIndex = -1;
+  }
   structSelectedRow = node.__row || null;
   if (structSelectedRow) {
     structSelectedRow.classList.add("selected");
+    structSelectedRow.setAttribute("aria-current", "true");
+    structSelectedRow.tabIndex = 0; // Tab re-enters the tree at the selection
     if (opts.scrollTree) {
-      structSelectedRow.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      structSelectedRow.scrollIntoView({ block: "nearest", behavior: SCROLL });
     }
   }
   document.querySelectorAll(".hlbox.selected").forEach((el) => el.remove());
@@ -955,7 +1006,7 @@ function selectNode(node, opts = {}) {
   band.appendChild(emphasis);
   // tree click -> bring the page location into view; box click -> stay put
   // (the user is already looking at it) and reveal the tree row instead.
-  if (!opts.scrollTree) emphasis.scrollIntoView({ block: "center", behavior: "smooth" });
+  if (!opts.scrollTree) emphasis.scrollIntoView({ block: "center", behavior: SCROLL });
 }
 
 // The language dropdown covers the common cases; a code it does not know goes
@@ -1000,7 +1051,8 @@ async function decide(approve) {
     const result = await api.decide(selected, reviewer, approve);
     const verdict = result.verapdf_passed
       ? "automatic check passed"
-      : "automatic check found issues (" + (result.failed_clauses.join(", ") || "unlisted") + ")";
+      : "automatic check found issues: " +
+        (veraIssueLines(result.failed_clauses || []).join("; ") || "unlisted");
     // refresh FIRST: renderDetail clears gate-result, so the outcome message
     // must be written after the re-render or the reviewer never sees it
     // (found by the automated browser QA run).

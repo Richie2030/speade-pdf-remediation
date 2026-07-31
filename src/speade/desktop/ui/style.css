@@ -48,7 +48,12 @@ button {
   border: 2px solid var(--ucc-navy); background: #fff; color: var(--ucc-navy);
 }
 button:hover { background: #e8f0f7; }
-button:focus-visible { outline: 3px solid var(--ucc-yellow); outline-offset: 1px; }
+/* two-tone focus ring: the yellow band is framed in navy so it stays visible
+   on white toolbars and navy bars alike (non-text contrast, WCAG 1.4.11) */
+button:focus-visible, .qitem:focus-visible, .tnode:focus-visible {
+  outline: 3px solid var(--ucc-yellow); outline-offset: 1px;
+  box-shadow: 0 0 0 6px var(--ucc-navy);
+}
 button.primary { background: var(--ucc-yellow); border-color: var(--ucc-yellow); color: var(--ucc-navy); }
 button.primary:hover { background: var(--ucc-yellow-dark); border-color: var(--ucc-yellow-dark); }
 button.approve { background: var(--ok); border-color: var(--ok); color: #fff; }
@@ -101,6 +106,7 @@ main { flex: 1; display: flex; min-height: 0; }
 #facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 18px; margin: 12px 0 6px; }
 #facts dt { color: var(--ink-muted); font-size: 14px; }
 #facts dd { margin: 0; font-size: 15px; }
+.issue-line { display: inline-block; margin-top: 2px; padding-left: 12px; }
 #doc-flags { margin-bottom: 10px; }
 
 /* ------------------------------------------------------ structure (tags) */
@@ -127,7 +133,7 @@ main { flex: 1; display: flex; min-height: 0; }
 #tag-tree { flex: 1 1 0; overflow-y: auto; min-height: 0; }
 .tnode { display: flex; align-items: baseline; gap: 6px; padding: 3px 4px; border-radius: 6px; cursor: pointer; }
 .tnode:hover { background: #eef4f9; }
-.tnode.selected { background: #fff0cd; outline: 2px solid var(--ucc-yellow); }
+.tnode.selected { background: #fff0cd; outline: 2px solid var(--ucc-navy); }
 .tnode .ttype { font-weight: 700; color: var(--ucc-navy); white-space: nowrap; font-size: 14px; }
 .tnode .ttext { color: var(--ink-muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tnode .caret { width: 14px; text-align: center; color: var(--ink-muted); flex: none; }
@@ -149,7 +155,8 @@ main { flex: 1; display: flex; min-height: 0; }
   background: var(--ucc-navy); color: #fff; padding: 1px 8px; border-radius: 8px; opacity: .75;
 }
 .hlbox {
-  position: absolute; border: 1.5px solid rgba(0, 60, 100, .45);
+  /* border alpha .65 keeps the outline above the 3:1 non-text contrast line */
+  position: absolute; border: 1.5px solid rgba(0, 60, 100, .65);
   background: rgba(0, 60, 100, .05); border-radius: 2px; cursor: pointer; z-index: 1;
 }
 .hlbox:hover { border-color: rgba(0, 60, 100, .8); }
@@ -163,6 +170,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .hlbox.selected {
   border: 3px solid var(--ucc-yellow); background: rgba(255, 184, 28, .18);
   pointer-events: none; z-index: 3;
+  box-shadow: 0 0 0 2px var(--ucc-navy); /* yellow alone is <3:1 on a white page */
 }
 #structure-note { padding: 8px 2px; }
 

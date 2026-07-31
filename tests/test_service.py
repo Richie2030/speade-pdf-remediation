@@ -509,6 +509,100 @@ def test_bulk_edit_is_one_operation_one_undo_step(tmp_path):
     assert service.undo_depth("doc.pdf", config) == 0  # refused edits leave no step
 
 
+def test_carve_tag_is_audited_and_one_undo_step(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    pikepdf = pytest.importorskip("pikepdf", reason="needs --extra tag")
+    config = _write_config(tmp_path)
+    # one paragraph holding two lines, as the tagging engine leaves a swallowed heading
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(612, 792))
+    page.Resources = pikepdf.Dictionary(
+        Font=pikepdf.Dictionary(
+            F1=pikepdf.Dictionary(
+                Type=pikepdf.Name.Font,
+                Subtype=pikepdf.Name.Type1,
+                BaseFont=pikepdf.Name.Helvetica,
+            )
+        )
+    )
+    page.Contents = pdf.make_stream(
+        b"/P <</MCID 0>> BDC BT /F1 18 Tf 72 700 Td (SWALLOWED) Tj ET EMC\n"
+        b"/P <</MCID 1>> BDC BT /F1 12 Tf 72 680 Td (body) Tj ET EMC"
+    )
+    para = pdf.make_indirect(
+        pikepdf.Dictionary(S=pikepdf.Name.P, K=pikepdf.Array([0, 1]), Pg=page.obj)
+    )
+    pdf.Root.StructTreeRoot = pdf.make_indirect(
+        pikepdf.Dictionary(
+            Type=pikepdf.Name.StructTreeRoot,
+            K=pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/Document"), K=para)),
+        )
+    )
+    pdf.save(tmp_path / "inbox" / "swallowed.pdf")
+    service.run_batch(None, config)
+    out = tmp_path / "outbox" / "swallowed.pdf"
+
+    target = service.structure_tree(out).root[0].kids[0]
+    result = service.carve_tag(out, [{"node_id": target.id, "mcid": 0}], "H2", config)
+
+    assert result["ok"] and result["carved"] == 1 and result["type"] == "H2"
+    assert [k.type for k in service.structure_tree(out).root[0].kids] == ["H2", "P"]
+    event = service.audit_events(config)[0]
+    assert event["event"] == "edit-carve" and event["lines"] == 1
+
+    assert service.undo_depth("swallowed.pdf", config) == 1
+    service.undo_last_edit(out, config)
+    assert [k.type for k in service.structure_tree(out).root[0].kids] == ["P"]
+
+    with pytest.raises(ValueError, match="nothing selected"):
+        service.carve_tag(out, [], "H2", config)
+
+
+def test_tag_untagged_is_audited_and_one_undo_step(tmp_path):
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    pikepdf = pytest.importorskip("pikepdf", reason="needs --extra tag")
+    config = _write_config(tmp_path)
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(612, 792))
+    page.Resources = pikepdf.Dictionary(
+        Font=pikepdf.Dictionary(
+            F1=pikepdf.Dictionary(
+                Type=pikepdf.Name.Font,
+                Subtype=pikepdf.Name.Type1,
+                BaseFont=pikepdf.Name.Helvetica,
+            )
+        )
+    )
+    page.Contents = pdf.make_stream(
+        b"/P <</MCID 0>> BDC BT /F1 12 Tf 72 700 Td (tagged) Tj ET EMC\n"
+        b"BT /F1 12 Tf 72 680 Td (engine missed me) Tj ET"
+    )
+    para = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name.P, K=0, Pg=page.obj))
+    pdf.Root.StructTreeRoot = pdf.make_indirect(
+        pikepdf.Dictionary(
+            Type=pikepdf.Name.StructTreeRoot,
+            K=pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/Document"), K=para)),
+        )
+    )
+    pdf.save(tmp_path / "inbox" / "missed.pdf")
+    service.run_batch(None, config)
+    out = tmp_path / "outbox" / "missed.pdf"
+
+    piece = service.structure_tree(out).untagged[0]
+    result = service.tag_untagged(out, piece.page, [piece.index], "P", config)
+
+    assert result["ok"] and result["tagged"] == 1
+    after = service.structure_tree(out)
+    assert after.untagged == []
+    assert [k.type for k in after.root[0].kids] == ["P", "P"]
+    event = service.audit_events(config)[0]
+    assert event["event"] == "edit-tag-new" and event["pieces"] == 1
+
+    assert service.undo_depth("missed.pdf", config) == 1
+    service.undo_last_edit(out, config)
+    assert len(service.structure_tree(out).untagged) == 1
+
+
 def test_reprocess_undoes_edits_from_the_original(tmp_path):
     pytest.importorskip("pypdfium2", reason="needs --extra ocr")
     config = _write_config(tmp_path)
