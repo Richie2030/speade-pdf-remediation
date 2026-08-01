@@ -14,6 +14,7 @@ which is exactly what the JS bridge will need.
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 from collections.abc import Callable
@@ -752,6 +753,46 @@ def audit_events(config_path: Path = DEFAULT_CONFIG_PATH, limit: int = 200) -> l
     ws = workspace(config_path)
     events = read_events(ws.audit_log)
     return list(reversed(events[-limit:]))
+
+
+# CSV columns every export carries; anything an event records beyond these
+# lands intact in the final "details" column, so no information is dropped.
+_EXPORT_COLUMNS = (
+    "time",
+    "event",
+    "document",
+    "reviewer",
+    "decision",
+    "verapdf_passed",
+    "source_sha256",
+    "output_sha256",
+)
+_EXPORT_KEYS = {"ts": "time", "file": "document"}  # log field -> column name
+
+
+def export_history(config_path: Path = DEFAULT_CONFIG_PATH) -> Path:
+    """Write the FULL audit trail as a timestamped CSV into the outbox -- the
+    visible shelf -- so an admin can collect machine histories without touching
+    the hidden audit folder. Excel-friendly (UTF-8 BOM); chronological order so
+    exports from several machines merge by simple concatenation. Read-only with
+    respect to the log itself."""
+    import csv
+
+    ws = workspace(config_path)
+    events = read_events(ws.audit_log)
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    out = ws.outbox / f"speade-history-{stamp}.csv"
+    with out.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([*_EXPORT_COLUMNS, "details"])
+        for event in events:
+            row = {_EXPORT_KEYS.get(k, k): v for k, v in event.items()}
+            rest = {k: v for k, v in row.items() if k not in _EXPORT_COLUMNS}
+            writer.writerow(
+                [row.get(column, "") for column in _EXPORT_COLUMNS]
+                + [json.dumps(rest) if rest else ""]
+            )
+    return out
 
 
 def decide(

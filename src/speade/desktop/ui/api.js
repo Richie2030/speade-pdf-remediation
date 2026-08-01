@@ -42,6 +42,7 @@ const api = {
   unwrapTag: (file, nodeId) => bridge("unwrap_tag", file, nodeId),
   undoLastEdit: (file) => bridge("undo_last_edit", file),
   removeAllTags: (file) => bridge("remove_all_tags", file),
+  exportHistory: () => bridge("export_history"),
   reprocess: (file) => bridge("reprocess", file),
   pageImage: (file, index) => bridge("page_image", file, index || 0),
   auditLog: (limit) => bridge("audit_log", limit),

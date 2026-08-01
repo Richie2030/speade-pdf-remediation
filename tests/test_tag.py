@@ -299,16 +299,80 @@ def test_ocr_layered_pages_keep_their_background_but_hide_it_from_the_engine(tmp
         assert "/Im0" in page.obj.Resources.XObject
 
 
-def test_missing_engine_fails_loud(tmp_path, monkeypatch):
-    # The born-digital path must fail loud when the engine is absent -- never a
-    # silent "success" with an untagged file.
-    def boom(*args, **kwargs):
-        raise FileNotFoundError("opendataloader-pdf")
+def _assert_degraded(result, pdf, expected_note):
+    """An engine that cannot run must never yield a silent 'success' with an
+    untagged file: it is reported as a FLAG on a document that flows to the
+    human gate, not an exception that kills the whole batch (the rule the OCR
+    stage already follows for a missing Tesseract)."""
+    assert "tag-unavailable" in result.sidecar.flags  # the reviewer is told
+    assert result.changed is False
+    assert result.output == pdf  # untouched, never a half-tagged file
+    assert expected_note in " ".join(result.notes)  # WHICH problem, so the fix is clear
 
-    monkeypatch.setattr(tag_module.subprocess, "run", boom)
+
+def test_engine_not_installed_flags_the_document(tmp_path, monkeypatch):
+    monkeypatch.setattr(tag_module.shutil, "which", lambda _name: None)
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(_PDF_BYTES)
+
+    result = TagStage().run(pdf, _sidecar(Route.BORN_DIGITAL))
+
+    _assert_degraded(result, pdf, "not found on PATH")
+
+
+def test_engine_blocked_by_app_control_flags_the_document(tmp_path, monkeypatch):
+    # the managed-Windows case seen live: the engine IS installed, App Control
+    # refuses to launch it (WinError 4551). A different fix from "not
+    # installed", so the note must say so rather than "not found".
+    monkeypatch.setattr(tag_module.shutil, "which", lambda _name: r"C:\tools\odl.exe")
+
+    def blocked(*_args, **_kwargs):
+        raise OSError(4551, "An Application Control policy has blocked this file")
+
+    monkeypatch.setattr(tag_module.subprocess, "run", blocked)
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(_PDF_BYTES)
+
+    result = TagStage().run(pdf, _sidecar(Route.BORN_DIGITAL))
+
+    _assert_degraded(result, pdf, "would not run it")
+    assert r"C:\tools\odl.exe" in " ".join(result.notes)  # names the exact file for IT
+
+
+def test_engine_is_resolved_to_a_full_path_so_cmd_shims_work(tmp_path, monkeypatch):
+    # Regression: passing subprocess a BARE name lets Windows resolve it, and
+    # CreateProcess only tries the .exe extension -- so a .cmd/.bat launcher
+    # (how Java CLIs are usually deployed, and the way past a blocked .exe) was
+    # invisible. Resolve via shutil.which, exactly as the veraPDF runner does.
+    shim = r"C:\Program Files\SPEADE\bin\opendataloader-pdf.cmd"
+    monkeypatch.setattr(tag_module.shutil, "which", lambda _name: shim)
+    seen = {}
+
+    def capture(cmd, *_args, **_kwargs):
+        seen["argv0"] = cmd[0]
+        raise OSError(2, "stop here -- the resolution is what matters")
+
+    monkeypatch.setattr(tag_module.subprocess, "run", capture)
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(_PDF_BYTES)
+
+    TagStage().run(pdf, _sidecar(Route.BORN_DIGITAL))
+
+    assert seen["argv0"] == shim  # the .cmd, not the bare name
+
+
+def test_engine_that_runs_and_fails_is_still_a_hard_error(tmp_path, monkeypatch):
+    # the other half of the contract: a REAL engine failure (it launched, then
+    # errored) is a batch-item failure, not a quiet flag.
+    class Failed:
+        returncode = 3
+        stdout = ""
+        stderr = "boom"
+
+    monkeypatch.setattr(tag_module.subprocess, "run", lambda *a, **k: Failed())
 
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(_PDF_BYTES)
 
-    with pytest.raises(RuntimeError, match="opendataloader-pdf not found"):
+    with pytest.raises(RuntimeError, match="opendataloader-pdf failed"):
         TagStage().run(pdf, _sidecar(Route.BORN_DIGITAL))

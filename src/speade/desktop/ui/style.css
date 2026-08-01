@@ -96,9 +96,10 @@ main { flex: 1; display: flex; min-height: 0; }
 .chip.fail { background: #f6dbd9; color: #7c211c; }
 
 #detail { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 16px 20px; overflow-y: auto; }
-/* the flex chain must reach #structure-wrap for its height to be bounded:
-   #detail-body is the actual flex child holding it. */
-#detail-body { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; }
+/* the detail column is TALLER than the window by design: the tags view gets a
+   guaranteed 70vh and the title/decide boxes live below the fold (#detail
+   scrolls). The tag editor is sticky, so editing never needs a scroll. */
+#detail-body { display: flex; flex-direction: column; }
 .empty { margin: auto; color: var(--ink-muted); max-width: 520px; font-size: 16px; }
 .detail-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .detail-head h2 { margin: 0; font-size: 20px; word-break: break-all; }
@@ -113,12 +114,11 @@ main { flex: 1; display: flex; min-height: 0; }
 /* THE document view: the tag tree beside a continuous top-to-bottom page
    stack with every tag's box drawn (Acrobat-style), selected tag emphasised. */
 #structure-wrap {
-  /* flex-basis 0 + overflow hidden pin the panel to its ALLOCATED height, so
-     the tree and the page stack scroll INTERNALLY. Without this, flexbox lets
-     the panel grow to the page stack's full height on long documents and the
-     whole detail pane scrolls as one block -- the box-to-tree highlight then
-     lands far off-screen (live-testing finding). */
-  flex: 1 1 0; min-height: 320px; overflow: hidden; display: flex; gap: 12px;
+  /* a FIXED 70vh + overflow hidden pin the panel's height, so the tree and the
+     page stack scroll INTERNALLY (a growing panel would break the box-to-tree
+     highlight -- live-testing finding). 70vh makes the document the star of
+     the screen; everything below it is reached by scrolling the right pane. */
+  height: 70vh; min-height: 340px; flex: none; overflow: hidden; display: flex; gap: 12px;
   border: 2px solid var(--line); border-radius: 8px; background: #fff; padding: 10px;
 }
 #tree-side {
@@ -144,7 +144,13 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 .tkids { margin-left: 16px; }
 .tkids.collapsed { display: none; }
-#page-side { flex: 1; min-width: 0; overflow-y: auto; background: var(--bg); border-radius: 6px; padding: 10px; }
+/* the bulk bar lives ABOVE the scrolling area, not inside it: it must stay
+   visible after a drag on page 40 of 40 (live-testing finding) */
+#page-side {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--bg); border-radius: 6px; padding: 10px;
+}
+#page-scroll { flex: 1 1 0; min-height: 0; overflow-y: auto; }
 .pageband {
   position: relative; width: 100%; margin: 0 auto 14px; background: #fff;
   box-shadow: 0 1px 4px rgba(0, 0, 0, .15);
@@ -157,16 +163,25 @@ main { flex: 1; display: flex; min-height: 0; }
 .hlbox {
   /* border alpha .65 keeps the outline above the 3:1 non-text contrast line */
   position: absolute; border: 1.5px solid rgba(0, 60, 100, .65);
-  background: rgba(0, 60, 100, .05); border-radius: 2px; cursor: pointer; z-index: 1;
+  background: rgba(0, 60, 100, .05); border-radius: 2px 2px 2px 0; cursor: pointer; z-index: 1;
+  container-type: size; /* lets the label hide itself on boxes too small to matter */
 }
 .hlbox:hover { border-color: rgba(0, 60, 100, .8); }
 .hlbox .btag {
-  position: absolute; top: -1px; left: -1px; pointer-events: none;
+  /* Acrobat-style tab: sits ABOVE the box, hanging on its top-left corner,
+     so the label never covers the content it names */
+  position: absolute; bottom: 100%; left: -1.5px; pointer-events: none;
   background: var(--ucc-navy); color: #fff; opacity: .85;
   font-size: 10px; font-weight: 700; line-height: 1.3; padding: 0 4px;
-  border-radius: 1px 0 4px 0; white-space: nowrap;
+  border-radius: 3px 3px 3px 0; white-space: nowrap;
 }
 .hlbox:hover .btag { opacity: 1; }
+/* no label on boxes too small to mean anything (2px bullet slivers, hairline
+   rules): their type still reads in the tree and the hover tooltip. The query
+   sees the box's CONTENT size, i.e. ~3px less than the drawn box. */
+@container (max-height: 2px) or (max-width: 10px) {
+  .btag { display: none; }
+}
 .hlbox.selected {
   border: 3px solid var(--ucc-yellow); background: rgba(255, 184, 28, .18);
   pointer-events: none; z-index: 3;
@@ -194,7 +209,7 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 #bulk-bar button:disabled { opacity: .45; }
 #bulk-bar {
-  position: sticky; top: 0; z-index: 5;
+  flex: none; /* a fixed strip above #page-scroll -- never scrolls away */
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 8px 10px; margin-bottom: 10px;
   background: var(--ucc-navy); color: #fff; border-radius: 8px;
@@ -247,7 +262,12 @@ main { flex: 1; display: flex; min-height: 0; }
 
 #tag-editor {
   margin-top: 12px; padding: 12px 14px; background: #fff;
-  border: 2px solid var(--line); border-radius: 8px;
+  border: 2px solid var(--ucc-navy); border-radius: 8px;
+  /* sticky: while the pages fill the screen, an open editor floats at the
+     bottom edge instead of hiding below the fold; scrolling down to the
+     decide gate lets it settle back into its natural slot. */
+  position: sticky; bottom: 10px; z-index: 6;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, .2);
 }
 .editor-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .editor-row label { font-size: 15px; font-weight: 600; }

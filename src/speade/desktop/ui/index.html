@@ -79,8 +79,10 @@
               <button id="bulk-tag" title="Give the selected UNTAGGED content (dashed red) a brand-new tag of the chosen type - for text the app missed, or content that was marked decorative">Tag untagged</button>
               <button id="bulk-clear">Clear</button>
             </div>
-            <div id="page-stack"></div>
-            <div id="structure-note" class="muted" hidden></div>
+            <div id="page-scroll">
+              <div id="page-stack"></div>
+              <div id="structure-note" class="muted" hidden></div>
+            </div>
           </div>
         </div>
 
@@ -172,7 +174,10 @@
       </div>
 
       <div id="history-pane" hidden>
-        <h2>History</h2>
+        <div class="detail-head">
+          <h2>History</h2>
+          <button id="export-history" title="Save the complete history as a spreadsheet (CSV) in the output folder, e.g. for an administrator collecting records from several PCs">Export history</button>
+        </div>
         <p class="muted">Everything the app has done, newest first. This record
           cannot be edited.</p>
         <table id="history-table" aria-label="Audit history">

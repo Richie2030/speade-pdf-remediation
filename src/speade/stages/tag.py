@@ -33,6 +33,14 @@ OPENDATALOADER_CMD = [
 # OpenDataLoader can be slow on large scans; fail loud rather than hang forever.
 _TAG_TIMEOUT_S = 600
 
+
+class EngineUnavailable(RuntimeError):
+    """The tagging engine could not be launched at all -- missing, or refused by
+    Windows App Control. Distinct from "the engine ran and failed", because the
+    document is still fine: it flows to the human gate flagged, not as a batch
+    failure (the same graceful-degradation rule the OCR stage follows)."""
+
+
 # The exact shape ocr.page_content gives every OCR-built page: the scan image
 # drawn inside one leading artifact block, then the invisible text.
 _ARTIFACT_PREFIX = b"/Artifact BMC"
@@ -158,12 +166,26 @@ class TagStage:
         # working file is `X.ocr.pdf`, which must not become the visible title).
         # ocr_layered: the page scans are backdrops for OUR text layer -- keep
         # them out of the engine's sight so no per-page Figure tag is created.
-        self._tag(
-            pdf,
-            out,
-            title=Path(sidecar.source_path).stem,
-            strip_background=sidecar.ocr_layered,
-        )
+        try:
+            self._tag(
+                pdf,
+                out,
+                title=Path(sidecar.source_path).stem,
+                strip_background=sidecar.ocr_layered,
+            )
+        except EngineUnavailable as exc:
+            # A machine without a usable tagging engine must not lose the whole
+            # batch: flag the document and pass it to the human gate untouched,
+            # exactly as the OCR stage does for a missing Tesseract.
+            sidecar.flags.append("tag-unavailable")
+            sidecar.applied(self.name)
+            return StageResult(
+                stage=self.name,
+                output=pdf,
+                sidecar=sidecar,
+                changed=False,
+                notes=[str(exc)],
+            )
 
         sidecar.applied(self.name)
         return StageResult(stage=self.name, output=out, sidecar=sidecar, changed=True)
@@ -192,12 +214,29 @@ class TagStage:
                 part.format(input=str(engine_input), outdir=str(outdir))
                 for part in OPENDATALOADER_CMD
             ]
+            # Resolve the launcher to a FULL PATH first, the way veraPDF's runner
+            # already does. Handing subprocess a bare name lets Windows resolve
+            # it itself -- and CreateProcess only tries the `.exe` extension, so
+            # a `.cmd`/`.bat` launcher (the normal way Java CLIs are deployed,
+            # and the way round an App-Control-blocked .exe) would be invisible.
+            # shutil.which honours PATHEXT, i.e. what a user typing the name gets.
+            resolved = shutil.which(cmd[0])
+            if resolved is None:
+                raise EngineUnavailable(
+                    "opendataloader-pdf not found on PATH -- install the tagging engine "
+                    "(needs a system Java 11+); see docs/runbook.md."
+                )
+            cmd[0] = resolved
             try:
                 proc = subproc.run(cmd, capture_output=True, text=True, timeout=_TAG_TIMEOUT_S)
-            except FileNotFoundError as exc:
-                raise RuntimeError(
-                    "opendataloader-pdf not found on PATH -- install the tagging engine "
-                    "(needs a system Java 11+); see spikes/README.md."
+            except OSError as exc:
+                # It resolved but would not start: on a managed Windows PC this
+                # is App Control refusing the launcher (WinError 4551) -- a
+                # DIFFERENT fix from "not installed", so say which.
+                raise EngineUnavailable(
+                    f"opendataloader-pdf is installed at {resolved} but Windows would not "
+                    f"run it ({exc}). Install it machine-wide via "
+                    "scripts/setup-machine.ps1, or have IT allowlist it."
                 ) from exc
             except subprocess.TimeoutExpired as exc:
                 raise RuntimeError(

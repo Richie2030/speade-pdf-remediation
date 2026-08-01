@@ -220,6 +220,10 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     def remove_all_tags(body: FileBody) -> dict:
         return bridge.remove_all_tags(body.file)
 
+    @app.post("/api/export_history")
+    def export_history() -> dict:
+        return bridge.export_history()
+
     @app.post("/api/reprocess")
     def reprocess(body: FileBody) -> dict:
         return bridge.reprocess(body.file)

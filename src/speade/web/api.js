@@ -75,6 +75,7 @@ const api = {
   unwrapTag: (file, nodeId) => postJSON("/api/unwrap_tag", { file, node_id: nodeId }),
   undoLastEdit: (file) => postJSON("/api/undo_last_edit", { file }),
   removeAllTags: (file) => postJSON("/api/remove_all_tags", { file }),
+  exportHistory: () => postJSON("/api/export_history", {}),
   reprocess: (file) => postJSON("/api/reprocess", { file }),
   pageImage: (file, index) =>
     getJSON(

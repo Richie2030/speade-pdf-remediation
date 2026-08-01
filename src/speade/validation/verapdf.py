@@ -105,8 +105,10 @@ def validate(pdf: Path, profile: str = "ua1", cli: str | None = None) -> VeraRes
         # no check=True: see docstring
         proc = subproc.run(cmd, capture_output=True, text=True, timeout=_TIMEOUT_S)
         report = json.loads(proc.stdout)
-    except FileNotFoundError:
-        # the located/configured runner is missing after all -- same fail-closed rule.
+    except OSError:
+        # Missing after all, or present but refused by Windows App Control
+        # (WinError 4551 on a managed PC). Either way we cannot verify: the
+        # fail-closed rule stands, never a silent pass.
         return VeraResult(passed=False, failed_clauses=["verapdf-unavailable"], profile=profile)
     except subprocess.TimeoutExpired:
         return VeraResult(passed=False, failed_clauses=["verapdf-timeout"], profile=profile)

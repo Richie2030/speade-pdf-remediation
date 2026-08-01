@@ -42,6 +42,7 @@ const FLAG_TEXT = {
   "tag-skipped-needs-ocr": "Not tagged, needs text recognition first",
   "tag-skipped-already-tagged": "Already had tags, left untouched",
   "tag-skipped-unreadable": "Not tagged, the file is unreadable",
+  "tag-unavailable": "Not tagged, the tagging engine is missing or blocked on this PC",
   "tag-ran-on-unknown-route": "Mixed content, check every part got tagged",
   "ocr-unavailable": "Text recognition is not installed on this PC",
   "ocr-failed": "Text recognition failed on this document",
@@ -487,7 +488,7 @@ function renderPageStack(file) {
         });
       }
     },
-    { root: $("page-side"), rootMargin: "600px" }
+    { root: $("page-scroll"), rootMargin: "600px" }
   );
   bands.forEach((b) => pageObserver.observe(b));
 }
@@ -1186,6 +1187,18 @@ function historyRow(e) {
   return `<tr><td>${when}</td><td>${file}</td><td>${what}</td></tr>`;
 }
 
+async function exportHistory() {
+  $("export-history").disabled = true;
+  const result = await api.exportHistory();
+  $("export-history").disabled = false;
+  if (result.error) {
+    setStatus(result.error);
+    return;
+  }
+  setStatus(`History saved as ${result.name} in the output folder.`);
+  api.openOutbox(); // show the file rather than describing where it went
+}
+
 async function toggleHistory() {
   const pane = $("history-pane");
   if (!pane.hidden) {
@@ -1216,6 +1229,7 @@ async function init() {
   $("approve").onclick = () => decide(true);
   $("reject").onclick = () => decide(false);
   $("history").onclick = toggleHistory;
+  $("export-history").onclick = exportHistory;
   $("show-links").onchange = () => {
     showLinks = $("show-links").checked;
     if (structTree && structTree.tagged && selected) {

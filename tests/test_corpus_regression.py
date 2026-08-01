@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -44,8 +45,31 @@ if not (DERIVED / "manifest.csv").is_file():
         "derived corpus not built -- run datasets/build_corpus.py first",
         allow_module_level=True,
     )
-if not shutil.which("opendataloader-pdf"):
-    pytest.skip("opendataloader-pdf CLI not on PATH", allow_module_level=True)
+
+
+def _engine_runs() -> str | None:
+    """Why the tagging engine is unusable here, or None if it works.
+
+    Presence on PATH is NOT enough: on a managed Windows PC App Control can
+    refuse to launch the engine's generated .exe (WinError 4551) even though
+    the file is right there. Checking only `which` made this module fail with
+    confusing assertion errors instead of skipping -- observed live.
+    """
+    found = shutil.which("opendataloader-pdf")
+    if not found:
+        return "opendataloader-pdf CLI not on PATH"
+    try:
+        subprocess.run([found, "--help"], capture_output=True, timeout=120)
+    except OSError as exc:  # blocked, or not executable here
+        return f"opendataloader-pdf cannot be launched: {exc}"
+    except subprocess.TimeoutExpired:
+        return "opendataloader-pdf did not respond"
+    return None
+
+
+_ENGINE_PROBLEM = _engine_runs()
+if _ENGINE_PROBLEM:
+    pytest.skip(_ENGINE_PROBLEM, allow_module_level=True)
 
 
 def _run(src: Path, tmp_path: Path) -> tuple[Sidecar, Path, Path]:

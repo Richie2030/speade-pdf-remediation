@@ -355,6 +355,15 @@ class SpeadeApi:
         except Exception as exc:
             return {"error": f"could not remove the tags: {str(exc)[:120]}"}
 
+    def export_history(self) -> dict:
+        """Copy the full history out of the hidden audit folder as a CSV in the
+        outbox, for admin collection. Returns the created file's path."""
+        try:
+            path = service.export_history(self._config_path)
+            return {"path": str(path), "name": path.name}
+        except Exception as exc:
+            return {"error": f"could not export the history: {str(exc)[:120]}"}
+
     def reprocess(self, file: str) -> dict:
         """Undo every edit by re-running the original inbox document."""
         try:

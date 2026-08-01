@@ -603,6 +603,60 @@ def test_tag_untagged_is_audited_and_one_undo_step(tmp_path):
     assert len(service.structure_tree(out).untagged) == 1
 
 
+def test_blocked_tagging_engine_flags_the_document_instead_of_failing(tmp_path, monkeypatch):
+    # Found live: Windows App Control refused the tagging engine's launcher
+    # (WinError 4551) and the WHOLE document failed with a raw OSError. On a
+    # managed PC that is the likely failure mode, so it must degrade like a
+    # missing Tesseract does: flag it, let the human gate see it, batch intact.
+    from speade.stages import tag as tag_stage
+
+    config = _write_config(tmp_path)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace("    passthrough: noop\n", "    tag: tag\n"),
+        encoding="utf-8",
+    )
+    (tmp_path / "inbox" / "doc.pdf").write_bytes(PDF_BYTES)
+
+    def blocked(*_args, **_kwargs):
+        raise OSError(4551, "An Application Control policy has blocked this file")
+
+    monkeypatch.setattr(tag_stage.subproc, "run", blocked)
+
+    items = service.run_batch(None, config)
+
+    (item,) = items
+    assert item.ok is True  # the batch survives
+    assert "tag-unavailable" in item.sidecar.flags
+    assert (tmp_path / "outbox" / "doc.pdf").is_file()  # still delivered for review
+    assert service.list_queue(config)[0].status == "draft"  # reaches the human gate
+
+
+def test_export_history_writes_a_mergeable_csv(tmp_path):
+    import csv
+
+    config = _write_config(tmp_path)
+    (tmp_path / "inbox" / "doc.pdf").write_bytes(PDF_BYTES)
+    service.run_batch(None, config)
+    service.decide(
+        tmp_path / "outbox" / "doc.pdf", reviewer="s123", approve=True, config_path=config
+    )
+
+    out = service.export_history(config)
+
+    assert out.parent == tmp_path / "outbox"  # the visible shelf, not the hidden folder
+    assert out.name.startswith("speade-history-") and out.suffix == ".csv"
+    with out.open(encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert [e["event"] for e in rows] == ["run", "verify"]  # chronological: mergeable
+    verify = rows[-1]
+    assert verify["reviewer"] == "s123"
+    assert verify["decision"] == "approved"
+    assert verify["document"] == "doc.pdf"
+    assert len(verify["output_sha256"]) == 64  # the fingerprint travels with the export
+    # the CSV never appears in the review queue (PDF-only scans)
+    assert all(item.file.endswith(".pdf") for item in service.list_queue(config))
+
+
 def test_reprocess_undoes_edits_from_the_original(tmp_path):
     pytest.importorskip("pypdfium2", reason="needs --extra ocr")
     config = _write_config(tmp_path)
