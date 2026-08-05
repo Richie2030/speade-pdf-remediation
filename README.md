@@ -2,9 +2,9 @@
 
 An on-prem tool for the UCC SPEADE accessibility programme. It takes PDFs and
 tags them toward WCAG 2.1 AA / PDF-UA, then hands each one to a person to check
-and sign off before it goes back up to Canvas. The automation only produces
-drafts. A human decides what actually gets uploaded. It's meant to assist the
-Student Partner remediation workflow, not replace it.
+and sign off before it is shared. The automation only produces drafts. A human
+decides what actually ships. It's meant to assist the Student Partner
+remediation workflow, not replace it.
 
 Everything runs offline against local folders. There's no cloud service, no
 Canvas or LMS integration, and no LLM anywhere in the pipeline. v1 handles PDFs
@@ -16,7 +16,7 @@ release.
 ```
 data/inbox → detect (born-digital vs scanned) → [OCR if scanned]
   → tag (structure + PDF/UA tagging) → draft in data/outbox   (awaiting review)
-  → human + veraPDF gate → data/outbox/approved/   (ready to upload back to Canvas)
+  → human + veraPDF gate → data/outbox/approved/   (ready to share)
                          → data/outbox/rejected/   (needs manual rework)
 ```
 
@@ -85,14 +85,19 @@ folder with two launchers):
   only. No hosting, no auth, and it never leaves the machine.
 
 Both go through the same engine, `src/speade/service.py`, where all the gate
-logic lives. In the client the reviewer previews the draft, looks at its tag
-structure and the veraPDF result, and edits the document title and reading
-language. Anything deeper, like writing figure alt-text or fixing the tag tree,
-happens in Acrobat through the "Open in viewer" hand-off, and a rejected draft
-lands in `rejected/` for that manual work. Approving re-runs veraPDF on the
-current bytes, records the machine result (the reviewer still has the final
-say), writes an audit entry, and moves the PDF from the outbox root into
-`approved/`.
+logic lives. The reviewer sees the tag tree beside the rendered pages with a box
+around every tagged region, plus the veraPDF result in plain language, and sets
+the document title and reading language.
+
+Most corrections happen **in the app**: change a tag's type, write an image
+description, mark content decorative, remove a wrapper tag, move a tag in the
+reading order, or drag a rectangle over the page to merge, retag, carve out or
+newly tag a whole selection. Every edit is re-checked by veraPDF, recorded in
+the audit log, and undoable one step at a time. Acrobat remains for what the app
+deliberately doesn't do (`docs/limitations.md`), and a rejected draft lands in
+`rejected/` for that work. Approving re-runs veraPDF on the current bytes,
+records the machine result (the reviewer still has the final say), writes an
+audit entry, and moves the PDF into `approved/`.
 
 ## Repository layout
 
@@ -107,8 +112,26 @@ src/speade/
   web/           # 127.0.0.1-only FastAPI serving of the same ui/
 config.yaml      # stage selection and folder layout
 tests/           # pytest suite
-scripts/         # the banned-imports and licence guards
+scripts/         # guards (banned imports, licences) + setup-machine.ps1
+docs/            # the handover documentation set (see below)
 ```
+
+## Documentation — start here
+
+v1 is frozen and no cohort continues it, so the docs are the handover. Find your
+audience:
+
+| You are | Read |
+|---|---|
+| a **reviewer** using the app | [`docs/user-guide.md`](docs/user-guide.md), the printable [`quick-reference.md`](docs/quick-reference.md), and [`acrobat-guide.md`](docs/acrobat-guide.md) for the corrections the app leaves to Acrobat |
+| **IT**, deploying it | [`docs/deployment.md`](docs/deployment.md) (signing, install, admin oversight), [`runbook.md`](docs/runbook.md) (machine setup — `scripts/setup-machine.ps1` automates it), [`security-and-data.md`](docs/security-and-data.md), [`maintainability.md`](docs/maintainability.md) |
+| **leadership**, wanting the shape of it | [`docs/overview.md`](docs/overview.md) and [`limitations.md`](docs/limitations.md) |
+| a **developer** picking this up cold | [`docs/architecture.md`](docs/architecture.md) first, then [`tech-stack.md`](docs/tech-stack.md) for pinned versions and [`docs/decisions/`](docs/decisions/) for why things are the way they are |
+
+Two references worth knowing exist: [`verapdf-clauses.md`](docs/verapdf-clauses.md)
+decodes every PDF/UA rule code the app can show you, and
+[`screen-reader-check.md`](docs/screen-reader-check.md) is the NVDA spot-check
+no software can do for you.
 
 ## Tests, lint, CI
 

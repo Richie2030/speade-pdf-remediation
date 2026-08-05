@@ -229,8 +229,6 @@ __marimo__/
 *.crt
 secrets/
 credentials*.json
-canvas_token*
-ally_token*
 config.local.*
 
 # --- OS cruft (cross-platform: macOS, Windows) ---
@@ -258,3 +256,39 @@ $RECYCLE.BIN/
 # Generated SBOM / reports
 bom.json
 /reports/
+# draw.io autosave/backup + lock scratch files (never commit)
+.$*
+*.bkp
+*.dtmp
+
+/CLAUDE.md
+
+datasets/
+
+.obsidian/
+
+After_Testing_Notes
+
+
+# diagram SOURCES are drawn/maintained outside the repo (exported for slides and
+# the IT pack), so they are not part of the committed handover set
+docs/diagrams/
+
+# docs/ ships as the handover set; these are internal notes-to-self, not delivery
+docs/documentation-plan.md
+docs/it-meeting-diagrams.md
+docs/diagrams-by-audience.md
+docs/qa-web.md
+
+Testing_Images/
+UI_Images/
+
+Diagrams_txt
+
+Test_PDFs/
+.gstack/
+
+
+SPEADE Presentation/
+
+Job/

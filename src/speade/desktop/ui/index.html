@@ -197,17 +197,17 @@
       <div class="help-body">
         <h3>The six steps</h3>
         <ol>
-          <li><b>Add PDFs&hellip;</b> — they appear under <i>Waiting to process</i>.</li>
-          <li><b>Process PDFs</b> — the app reads scans (OCR) and adds accessibility
+          <li><b>Add PDFs&hellip;</b> - they appear under <i>Waiting to process</i>.</li>
+          <li><b>Process PDFs</b> - the app reads scans (OCR) and adds accessibility
             tags. Already-processed files are skipped automatically.</li>
-          <li><b>Review</b> — click a document. The left side lists every heading,
+          <li><b>Review</b> - click a document. The left side lists every heading,
             paragraph, list, and image; the right side shows the pages with a box
             around each tagged part. Click either side to highlight the other.</li>
-          <li><b>Title &amp; language</b> — set what a screen reader should announce,
+          <li><b>Title &amp; language</b> - set what a screen reader should announce,
             then save.</li>
-          <li><b>Decide</b> — <i>Approve</i> (moves to the <code>approved</code>
+          <li><b>Decide</b> - <i>Approve</i> (moves to the <code>approved</code>
             folder, done) or <i>Reject</i> (moves to <code>rejected</code>).</li>
-          <li><b>Fix and return</b> — repair rejected PDFs in Adobe Acrobat Pro,
+          <li><b>Fix and return</b> - repair rejected PDFs in Adobe Acrobat Pro,
             save over the same file, come back and <b>Approve</b>. Not approved =
             not done.</li>
         </ol>
@@ -217,27 +217,27 @@
           <li>Do the headings in the list match the document's real headings?</li>
           <li>Does the top-to-bottom order match sensible reading order?</li>
           <li>Are lists and tables tagged as lists and tables?</li>
-          <li>Does every meaningful image say <b>Image</b> — and have a
+          <li>Does every meaningful image say <b>Image</b> - and have a
             description? ("needs description" means you write one, below the pages.)</li>
           <li>Is any visible content missing a box entirely? No box = not tagged.</li>
         </ul>
 
         <h3>Fixing tags without leaving the app</h3>
         <ul>
-          <li><b>One tag</b> — click it (tree or page box): change its type, write
+          <li><b>One tag</b> - click it (tree or page box): change its type, write
             an image description, mark it decorative, remove a wrapper, or move it
             earlier/later in the reading order.</li>
-          <li><b>Many tags</b> — <b>drag a rectangle on a page</b>, like Acrobat.
+          <li><b>Many tags</b> - <b>drag a rectangle on a page</b>, like Acrobat.
             The bar that appears can <i>merge them into one tag</i> (the fix for
             over-fragmented text), <i>change all</i>, or <i>mark all decorative</i>.</li>
-          <li><b>Part of a tag</b> — drag over just some of its lines and
-            <i>New tag from lines</i> carves them out into their own tag — the
+          <li><b>Part of a tag</b> - drag over just some of its lines and
+            <i>New tag from lines</i> carves them out into their own tag - the
             fix for a heading swallowed into the top of a paragraph.</li>
-          <li><b>Untagged content</b> — anything with no box at all (missed
+          <li><b>Untagged content</b> - anything with no box at all (missed
             text, or something marked decorative) shows a dashed red highlight
             when you drag over it; <i>Tag untagged</i> gives it a brand-new
             tag. Decorative is therefore reversible.</li>
-          <li><b>Undo</b> — <i>Undo last change</i> steps back one edit at a time;
+          <li><b>Undo</b> - <i>Undo last change</i> steps back one edit at a time;
             <i>Undo all edits</i> starts over from the original. Every edit re-runs
             the automatic check and is recorded in History.</li>
           <li>Still Acrobat's job: selecting part of a single line and table
@@ -250,30 +250,30 @@
           <dd>They were already processed and haven't changed. Replace the file in
             the input folder with a new version to process it again.</dd>
           <dt>What does "Edited since processing" mean?</dt>
-          <dd>The file changed after the app made it — normally because you fixed
+          <dd>The file changed after the app made it - normally because you fixed
             it in Acrobat. That's expected; approving records the file as it is now.</dd>
           <dt>A document says it is password-protected or damaged.</dt>
           <dd>The app never guesses passwords and can't repair broken files. Ask
             the document's owner for a usable copy and add it again.</dd>
           <dt>What is the "automatic check"?</dt>
           <dd>veraPDF, the official PDF/UA accessibility validator. Its verdict is
-            advice — your Approve/Reject is the decision, and it is recorded.</dd>
+            advice - your Approve/Reject is the decision, and it is recorded.</dd>
           <dt>Who writes the image descriptions?</dt>
-          <dd>You do — select the image and type it below the pages (or in
+          <dd>You do - select the image and type it below the pages (or in
             Acrobat). Descriptions are never machine-written. That's deliberate:
             quality needs a human.</dd>
           <dt>Where do finished documents go?</dt>
-          <dd><code>outbox\approved</code> — share the PDF only; the app's record
+          <dd><code>outbox\approved</code> - share the PDF only; the app's record
             files stay behind.</dd>
         </dl>
 
         <h3>The three rules</h3>
         <ol>
-          <li><b>Originals are sacred</b> — corrections happen on the draft, never
+          <li><b>Originals are sacred</b> - corrections happen on the draft, never
             the source file.</li>
-          <li><b>Nothing ships without a human</b> — only your Approve makes it
+          <li><b>Nothing ships without a human</b> - only your Approve makes it
             accessible.</li>
-          <li><b>When unsure, reject and ask</b> — the queue can wait; students
+          <li><b>When unsure, reject and ask</b> - the queue can wait; students
             relying on the document can't.</li>
         </ol>
 
