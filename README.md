@@ -127,6 +127,7 @@ audience:
 | **IT**, deploying it | [`docs/deployment.md`](docs/deployment.md) (signing, install, admin oversight), [`runbook.md`](docs/runbook.md) (machine setup — `scripts/setup-machine.ps1` automates it), [`security-and-data.md`](docs/security-and-data.md), [`maintainability.md`](docs/maintainability.md) |
 | **leadership**, wanting the shape of it | [`docs/overview.md`](docs/overview.md) and [`limitations.md`](docs/limitations.md) |
 | a **developer** picking this up cold | [`docs/architecture.md`](docs/architecture.md) first, then [`tech-stack.md`](docs/tech-stack.md) for pinned versions and [`docs/decisions/`](docs/decisions/) for why things are the way they are |
+| **testing** the whole app before sign-off | [`docs/self-test-checklist.md`](docs/self-test-checklist.md) — a full manual QA pass, every feature and edge case with its exact pass condition |
 
 Two references worth knowing exist: [`verapdf-clauses.md`](docs/verapdf-clauses.md)
 decodes every PDF/UA rule code the app can show you, and

@@ -3,9 +3,10 @@
 ## The six steps
 
 1. **Open** `speade-desktop.exe`.
-2. **Add PDFs…** — they appear under *Waiting to process*.
+2. **Add PDFs…** — they appear under *Waiting to process*. Aim for **~50 at a
+   time** — a comfortable amount to review; do several batches if there are more.
 3. **Process PDFs** — wait for the progress bar; already-done files are
-   skipped automatically.
+   skipped automatically, so splitting into batches costs nothing.
 4. **Review** — click a document: check the tag tree and the boxes on the
    pages (heading order → reading order → lists/tables → image descriptions →
    anything with no box). Set the **title and language**, save.

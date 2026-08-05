@@ -1091,7 +1091,25 @@ async function stopBatch() {
   await api.runBatchCancel();
 }
 
+// A batch of ~50 is a comfortable amount to review in one sitting; past this we
+// nudge the reviewer to work in smaller batches (never block — already-done
+// files are skipped, so several small batches cost nothing).
+const LARGE_BATCH = 100;
+
 async function runBatch() {
+  if (
+    pending.length > LARGE_BATCH &&
+    !window.confirm(
+      `You are about to process ${pending.length} PDFs. That is a lot to review ` +
+        "in one sitting.\n\nYou can process them in smaller batches (around 50 at a " +
+        "time) — already-processed files are skipped, so nothing is wasted by " +
+        "splitting it up.\n\nProcess all " +
+        pending.length +
+        " now anyway?"
+    )
+  ) {
+    return; // they chose to trim the inbox and do a smaller batch
+  }
   $("run").disabled = true;
   setStatus("");
   const started = await api.runBatchStart();

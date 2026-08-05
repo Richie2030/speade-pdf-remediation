@@ -54,13 +54,18 @@ the batch after the current document if you need to.
 
 Useful to know:
 
+- **Work in batches of about 50.** That is a comfortable amount to review in one
+  sitting — the review, not the processing, is the real work. If a module has a
+  few hundred PDFs, do them in several batches. It costs nothing to split it up:
+  already-processed files are skipped, so you never redo anything. (If you queue
+  a very large batch the app gently reminds you of this — you can still proceed.)
 - **Already-processed files are skipped.** Add two PDFs today and one
   tomorrow — tomorrow's run processes only the new one ("1 processed, 2
   already done").
 - **One bad file never stops the rest.** A password-protected or damaged PDF
   shows up in the list with a plain-language note; the others carry on.
-- Each document takes roughly 15–40 seconds (scans take longest). A very large
-  batch simply takes time — the progress bar and Stop button are your friends.
+- Each document takes roughly 15–40 seconds (scans take longest). A large batch
+  simply takes time — the progress bar and Stop button are your friends.
 - Right after processing, every document already shows its **automatic check**
   result (the official PDF/UA validator) — you can see which documents passed
   before you even open them.
