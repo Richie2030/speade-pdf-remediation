@@ -108,6 +108,25 @@ function Add-MachinePath([string] $Folder) {
     Write-Ok "added to the system PATH: $Folder"
 }
 
+function Invoke-Tool([string] $Exe, [string[]] $ToolArgs) {
+    <# Run a native tool, returning its merged output and exit code. java
+       -version prints to STDERR, and under $ErrorActionPreference = "Stop"
+       Windows PowerShell wraps redirected stderr lines in ErrorRecords and
+       throws on the FIRST one -- a healthy tool then reads as a failed launch.
+       Relax the preference around the call; a genuine launch failure (blocked
+       or missing exe) still throws for the caller to catch. #>
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        # capture, THEN read $LASTEXITCODE: piping into Select-Object -First
+        # short-circuits the pipeline and leaves the exit code stale/unset.
+        $out = & $Exe @ToolArgs 2>&1
+        return @{ Output = $out; ExitCode = $LASTEXITCODE }
+    } finally {
+        $ErrorActionPreference = $eap
+    }
+}
+
 function Find-Offline([string] $Pattern) {
     if (-not $OfflineDir) { return $null }
     $hit = Get-ChildItem -Path $OfflineDir -Filter $Pattern -File -ErrorAction SilentlyContinue |
@@ -159,8 +178,14 @@ if ($OfflineDir -and -not (Test-Path $OfflineDir)) {
 # --- 1. Java (hosts BOTH Java tools) ----------------------------------------
 Write-Step "1/4  Java runtime (Temurin JRE $($PINNED.Java))"
 if (Get-Command java -ErrorAction SilentlyContinue) {
-    $ver = (& java -version 2>&1 | Select-Object -First 1)
-    Write-Skip "java already present: $ver"
+    try {
+        $ver = (Invoke-Tool "java" @("-version")).Output | Select-Object -First 1
+        Write-Skip "java already present: $ver"
+    } catch {
+        # on the PATH but not launchable (e.g. App Control) -- keep going and
+        # let the verification pass report it as the failure it is
+        Write-Note "java is on the PATH but did not launch ($($_.Exception.Message.Trim())); see the verification below."
+    }
 } else {
     $msi = Find-Offline "OpenJDK*.msi"
     if ($msi) {
@@ -338,25 +363,22 @@ if (-not $SkipVerify) {
             Write-Fail "$($c.Name): not found -- $($c.Effect)."
             continue
         }
-        # capture, THEN read $LASTEXITCODE: piping into Select-Object -First
-        # short-circuits the pipeline and leaves the exit code stale/unset.
         try {
-            $out = & $exe @($c.Args) 2>&1
-            $code = $LASTEXITCODE
+            $probe = Invoke-Tool $exe $c.Args
         } catch {
             # e.g. "An Application Control policy has blocked this file"
             Write-Fail "$($c.Name): could not be launched ($($_.Exception.Message.Trim())) -- $($c.Effect)."
             continue
         }
-        if ($code -ne 0) {
-            Write-Fail "$($c.Name): found but exited $code -- $($c.Effect)."
+        if ($probe.ExitCode -ne 0) {
+            Write-Fail "$($c.Name): found but exited $($probe.ExitCode) -- $($c.Effect)."
             continue
         }
         if (-not $resolved) {
             Write-Note "$($c.Name) is not on the PATH but SPEADE probes its default location, so it will work."
         }
-        $first = ($out | Select-Object -First 1)
-        Write-Ok "$($c.Name): $(($first -replace '\s+', ' ').Trim())"
+        $first = ($probe.Output | Select-Object -First 1)
+        Write-Ok "$($c.Name): $(("$first" -replace '\s+', ' ').Trim())"
     }
 }
 
