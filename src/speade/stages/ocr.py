@@ -636,9 +636,10 @@ class OcrStage:
             # for each render, but NOT while Tesseract runs, so the tags view
             # stays usable while a batch is processing.
             with PDFIUM_LOCK:
-                doc = pdfium.PdfDocument(str(pdf))
+                doc = pdfium.PdfDocument(pdf.read_bytes())
+                n_pages = len(doc)  # FPDF call: must sit under the lock too
             try:
-                for i in range(len(doc)):
+                for i in range(n_pages):
                     png = tmpd / f"pg_{i:04d}.png"
                     with PDFIUM_LOCK:
                         image = doc[i].render(scale=_DPI / 72).to_pil()

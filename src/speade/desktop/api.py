@@ -20,7 +20,6 @@ import threading
 from pathlib import Path
 
 from speade import service, subproc
-from speade.pdfium_lock import PDFIUM_LOCK
 from speade.service import DEFAULT_CONFIG_PATH
 
 # Above this size the embedded preview is refused (a data: URI would bloat 4/3x
@@ -46,6 +45,9 @@ class SpeadeApi:
         self._window = None  # set by app.py once the window exists (native dialogs)
         self._batch_lock = threading.Lock()
         self._batch: dict = {"running": False}  # polled by run_batch_status
+        self._batch_thread: threading.Thread | None = None  # joined by shutdown()
+        self._renderer_lock = threading.Lock()
+        self._page_renderer = None  # lazy: speade.render_worker.PageRenderer
 
     def attach_window(self, window) -> None:
         self._window = window
@@ -110,41 +112,38 @@ class SpeadeApi:
 
     def page_image(self, file: str, index: int = 0) -> dict:
         """One page rendered as a PNG data: URI (plus its size in PDF points),
-        the canvas the tags panel draws its highlight boxes over."""
+        the canvas the tags panel draws its highlight boxes over.
+
+        Rendered in the SACRIFICIAL worker process (speade.render_worker), not
+        in-process: the recorded desktop crashes were native pdfium faults
+        during preview renders, and no in-process discipline survives those.
+        A poison page now costs one image, not the review session. (This is
+        also why PDFIUM_LOCK is not taken here -- pdfium runs in the child.)"""
         pdf = self._resolve(file)
         if pdf is None:
             return {"error": f"not found: {Path(file).name}"}
         try:
-            import io
-
-            import pypdfium2 as pdfium
-
-            # pdfium is not thread-safe, and pywebview runs every bridge call
-            # on its own thread -- scrolling fires many page_image calls at
-            # once (see speade.pdfium_lock).
-            with PDFIUM_LOCK:
-                doc = pdfium.PdfDocument(str(pdf))
-                try:
-                    pages = len(doc)
-                    if not 0 <= index < pages:
-                        return {"error": f"no page {index + 1}"}
-                    page = doc[index]
-                    width, height = page.get_size()
-                    scale = min(1400 / max(width, 1), 2.0)  # ~1400px wide: crisp
-                    image = page.render(scale=scale).to_pil()
-                finally:
-                    doc.close()
-            buf = io.BytesIO()
-            image.save(buf, format="PNG")
-            encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-            return {
-                "data_uri": f"data:image/png;base64,{encoded}",
-                "width": width,
-                "height": height,
-                "pages": pages,
-            }
+            result = self._renderer().render(pdf, int(index))
         except Exception as exc:
             return {"error": f"page image unavailable: {str(exc)[:120]}"}
+        if "error" in result:
+            return {"error": result["error"]}
+        encoded = base64.b64encode(result["png"]).decode("ascii")
+        return {
+            "data_uri": f"data:image/png;base64,{encoded}",
+            "width": result["width"],
+            "height": result["height"],
+            "pages": result["pages"],
+        }
+
+    def _renderer(self):
+        """The lazy singleton render worker (started on first page image)."""
+        with self._renderer_lock:
+            if self._page_renderer is None:
+                from speade.render_worker import PageRenderer
+
+                self._page_renderer = PageRenderer()
+            return self._page_renderer
 
     def audit_log(self, limit: int = 200) -> list[dict]:
         """The audit trail, newest first -- the History view."""
@@ -191,7 +190,9 @@ class SpeadeApi:
             finally:
                 self._batch["running"] = False
 
-        threading.Thread(target=worker, name="speade-batch", daemon=True).start()
+        thread = threading.Thread(target=worker, name="speade-batch", daemon=True)
+        self._batch_thread = thread
+        thread.start()
         return {"started": True}
 
     def run_batch_cancel(self) -> dict:
@@ -199,6 +200,24 @@ class SpeadeApi:
         the file in flight always finishes, so nothing is left half-written."""
         self._batch["cancel"] = True
         return {"cancelling": True}
+
+    def shutdown(self, timeout_s: float = 600.0) -> None:
+        """App-exit hook (called after the window closes): stop the batch and
+        WAIT for the in-flight document to finish before the interpreter exits.
+
+        Without this, interpreter shutdown races the daemon batch worker: atexit
+        runs pypdfium2's weakref finalizers on the main thread -- closing pdfium
+        objects unlocked -- while the worker is still inside a native pdfium
+        call. That use-after-free is one of the recorded 0xc0000374 heap-
+        corruption crashes. The timeout matches the tag engine's own ceiling,
+        so only a truly hung external tool can still leave the race open.
+        """
+        self._batch["cancel"] = True
+        thread = self._batch_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=timeout_s)
+        if self._page_renderer is not None:
+            self._page_renderer.close()  # the render child, politely
 
     def run_batch_status(self) -> dict:
         """The polled state of the running (or last) batch: running / done /
@@ -377,9 +396,14 @@ class SpeadeApi:
     def decide(self, file: str, reviewer: str, approve: bool) -> dict:
         """The human gate: veraPDF verdict + the reviewer's decision (service.decide)."""
         pdf = self._resolve(file) or service.workspace(self._config_path).outbox / Path(file).name
-        sidecar = service.decide(
-            pdf, reviewer=reviewer, approve=approve, config_path=self._config_path
-        )
+        try:
+            sidecar = service.decide(
+                pdf, reviewer=reviewer, approve=approve, config_path=self._config_path
+            )
+        except FileNotFoundError as exc:
+            return {"error": str(exc)}
+        except Exception as exc:  # the gate must never take the whole UI down
+            return {"error": f"could not record the decision: {str(exc)[:160]}"}
         return {
             "file": pdf.name,
             "verapdf_passed": sidecar.verapdf_passed,

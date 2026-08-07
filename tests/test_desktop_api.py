@@ -99,6 +99,38 @@ def test_batch_start_and_status_drive_the_progress_bar(tmp_path):
     assert [(i["file"], i["ok"]) for i in status["items"]] == [("a.pdf", True), ("b.pdf", True)]
 
 
+def test_shutdown_stops_the_batch_and_waits_for_the_worker(tmp_path, monkeypatch):
+    # the app-exit hook: without cancel+join, interpreter shutdown races the
+    # daemon batch worker inside a native pdfium call (the recorded
+    # heap-corruption crash mechanism). shutdown() must flag the stop and not
+    # return until the worker has actually finished.
+    import threading
+
+    api = _api(tmp_path)
+    started = threading.Event()
+
+    def slow_batch(folder, config, progress=None, cancel=None, reprocess=False):
+        started.set()
+        while not cancel():  # grinds until someone asks it to stop
+            time.sleep(0.01)
+        return []
+
+    monkeypatch.setattr(service, "run_batch", slow_batch)
+    api.run_batch_start()
+    assert started.wait(timeout=5)  # the worker is genuinely running
+
+    api.shutdown(timeout_s=10)
+
+    assert api._batch["cancel"] is True
+    assert not api._batch_thread.is_alive()  # joined, not abandoned
+    assert api._batch["running"] is False
+
+
+def test_shutdown_without_a_batch_is_a_no_op(tmp_path):
+    api = _api(tmp_path)
+    api.shutdown(timeout_s=1)  # must not raise with no thread ever started
+
+
 def test_structure_reports_errors_as_data_not_crashes(tmp_path):
     api = _api(tmp_path)
     (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)  # too minimal to parse

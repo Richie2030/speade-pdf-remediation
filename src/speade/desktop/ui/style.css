@@ -294,6 +294,9 @@ main { flex: 1; display: flex; min-height: 0; }
   background: #fff; border: 2px solid var(--ucc-navy); border-radius: 10px;
   box-shadow: 0 8px 40px rgba(0, 0, 0, .35);
 }
+/* the dodge: a figure in the right half of its page docks the dialog to the
+   left side instead, so it never sits on the image being described */
+#alt-modal.dodge-left { right: auto; left: 36px; }
 .alt-head {
   display: flex; align-items: center; justify-content: space-between;
   background: var(--ucc-navy); color: #fff; border-radius: 8px 8px 0 0;

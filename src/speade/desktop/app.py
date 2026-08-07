@@ -20,6 +20,10 @@ def main() -> int:
     """Open the review window; blocks until the reviewer closes it."""
     import webview  # lazy: needs the `desktop` extra (pywebview, BSD)
 
+    from speade.diagnostics import enable_crash_log
+
+    enable_crash_log("desktop")  # a native crash must leave a stack behind
+
     config = Path(sys.argv[1]) if len(sys.argv) > 1 else None
     api = SpeadeApi(config)
     window = webview.create_window(
@@ -31,5 +35,16 @@ def main() -> int:
         min_size=(900, 600),
     )
     api.attach_window(window)
+
+    def _on_closing() -> None:
+        # closing the window mid-batch: flag the stop NOW (the batch halts
+        # after the in-flight document) so the post-start() wait is short.
+        # Returning None never blocks the close.
+        api.run_batch_cancel()
+
+    window.events.closing += _on_closing
     webview.start()
+    # the window is gone but a batch worker may still be inside a native call:
+    # wait for it before the interpreter's exit finalizers run (see shutdown).
+    api.shutdown()
     return 0

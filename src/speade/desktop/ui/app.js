@@ -13,6 +13,7 @@ let selected = null;
 let structTree = null; // the fetched tree for `selected`
 let structSelectedRow = null; // the highlighted .tnode element
 let pageObserver = null; // lazy-loads page images as bands scroll into view
+let loadedBands = []; // bands holding a live page image, oldest first (LRU cap)
 let showLinks = false; // inline links hidden by default (see isHiddenLink)
 let selectedNode = null; // the tag currently open in the editor
 let tagTypes = []; // assignable tag types, from the backend
@@ -50,6 +51,9 @@ const FLAG_TEXT = {
   "ocr-timeout": "Text recognition took too long and was stopped",
   "ocr-skipped-unreadable": "No text recognition, the file is unreadable",
   "unreadable-encrypted-password-required": "Password-protected, cannot be processed",
+  "decide-move-failed-file-in-use":
+    "Decision recorded, but the file could not be moved to its folder because " +
+    "another program had it open. Close it (e.g. Acrobat) and decide again.",
 };
 
 function flagText(flag) {
@@ -478,26 +482,60 @@ function renderPageStack(file) {
   });
   // pages render lazily as they scroll into view -- a 100-page scan must not
   // fetch 100 images up front. Sizes are known, so layout never jumps.
+  // Bands stay OBSERVED after loading: scrolled-past pages are evicted once
+  // the cache passes its cap (below), so a long scan cannot pin hundreds of
+  // multi-MB data URIs and starve the WebView2 renderer (the one real leak
+  // the crash investigation confirmed; the OS had logged a pre-leak warning).
+  loadedBands = [];
   pageObserver = new IntersectionObserver(
     (entries) => {
       for (const entry of entries) {
-        if (!entry.isIntersecting) continue;
         const band = entry.target;
-        pageObserver.unobserve(band);
-        const index = parseInt(band.dataset.page, 10);
-        api.pageImage(file, index).then((result) => {
-          if (selected !== file || result.error || band.querySelector("img")) return;
-          const img = document.createElement("img");
-          img.alt = `Page ${index + 1}`;
-          img.src = result.data_uri;
-          img.draggable = false; // the mouse draws marquees here, not image drags
-          band.prepend(img);
-        });
+        band.__visible = entry.isIntersecting;
+        if (!entry.isIntersecting) continue;
+        if (band.querySelector("img")) {
+          // already cached: refresh its LRU position
+          loadedBands = loadedBands.filter((b) => b !== band);
+          loadedBands.push(band);
+          continue;
+        }
+        loadBandImage(band, file);
       }
     },
     { root: $("page-scroll"), rootMargin: "600px" }
   );
   bands.forEach((b) => pageObserver.observe(b));
+}
+
+// One band's page render: shared by the scroll observer and the alt-text
+// stepper's force-load, so both fill the band the same way exactly once.
+function loadBandImage(band, file) {
+  const index = parseInt(band.dataset.page, 10);
+  api.pageImage(file, index).then((result) => {
+    if (selected !== file || result.error || band.querySelector("img")) return;
+    const img = document.createElement("img");
+    img.alt = `Page ${index + 1}`;
+    img.src = result.data_uri;
+    img.draggable = false; // the mouse draws marquees here, not image drags
+    band.prepend(img);
+    loadedBands.push(band);
+    evictPageImages();
+  });
+}
+
+// ~2-2.5MB per rendered scan page: 24 cached bands ≈ 60MB renderer-side, a
+// comfortable ceiling. Only off-screen bands are evicted (oldest first); a
+// re-visit simply refetches -- pages re-render in a few hundred ms.
+const PAGE_CACHE_LIMIT = 24;
+
+function evictPageImages() {
+  while (loadedBands.length > PAGE_CACHE_LIMIT) {
+    const oldest = loadedBands.find((b) => !b.__visible);
+    if (!oldest) return; // everything cached is on/near screen: keep it all
+    loadedBands = loadedBands.filter((b) => b !== oldest);
+    const img = oldest.querySelector("img");
+    if (img) img.remove(); // the data URI is dropped; the observer refetches on return
+  }
 }
 
 // Some tags carry no text of their own because it lives in a child (a title
@@ -973,8 +1011,37 @@ function showAltFigure() {
   const carried = altWalk.carryStatus;
   altWalk.carryStatus = null;
   $("alt-status").textContent = carried || (node.alt ? "" : "No description yet.");
-  selectNode(node, { scrollTree: true }); // the page scrolls to the image behind
+  // the Acrobat behavior: every arrow press brings THE image being described
+  // into view. selectNode without scrollTree scrolls the PAGE to the figure
+  // (scrollTree:true would mean "the click came from the page: tree only").
+  selectNode(node);
+  if (node.__row) node.__row.scrollIntoView({ block: "nearest", behavior: SCROLL });
+  // lazy loading is not enough here: fetch the page render NOW, so the
+  // reviewer never describes a blank band (and an evicted page comes back).
+  ensurePageImage(node.page);
+  // keep the dialog off the image: figure sits in the right half of its page
+  // -> dialog docks left, and vice versa.
+  if (node.box && node.page !== null && structTree) {
+    const size = structTree.pages[node.page];
+    const centerFrac = (node.box[0] + node.box[2]) / 2 / size.width;
+    $("alt-modal").classList.toggle("dodge-left", centerFrac > 0.5);
+  }
   $("alt-text").focus();
+}
+
+// Fetch one band's page render immediately (the stepper's force-load): the
+// IntersectionObserver only fires once scrolling settles, and the LRU may
+// have evicted a previously seen page.
+function ensurePageImage(pageIndex) {
+  if (pageIndex === null || pageIndex === undefined || !structTree) return;
+  const band = $("page-stack").querySelector(`.pageband[data-page="${pageIndex}"]`);
+  if (!band) return;
+  if (band.querySelector("img")) {
+    loadedBands = loadedBands.filter((b) => b !== band); // LRU touch: it is
+    loadedBands.push(band); // being looked at right now, evict it last
+    return;
+  }
+  loadBandImage(band, selected);
 }
 
 function setAltWalkBusy(busy) {
@@ -1232,6 +1299,10 @@ async function decide(approve) {
   setStatus("Running the final automatic check…");
   try {
     const result = await api.decide(selected, reviewer, approve);
+    if (result.error) {
+      $("gate-result").textContent = "Error: " + result.error;
+      return;
+    }
     const verdict = result.verapdf_passed
       ? "automatic check passed"
       : "automatic check found issues: " +

@@ -108,23 +108,25 @@ function Add-MachinePath([string] $Folder) {
     Write-Ok "added to the system PATH: $Folder"
 }
 
-function Invoke-Tool([string] $Exe, [string[]] $ToolArgs) {
-    <# Run a native tool, returning its merged output and exit code. java
-       -version prints to STDERR, and under $ErrorActionPreference = "Stop"
-       Windows PowerShell wraps redirected stderr lines in ErrorRecords and
-       throws on the FIRST one -- a healthy tool then reads as a failed launch.
-       Relax the preference around the call; a genuine launch failure (blocked
-       or missing exe) still throws for the caller to catch. #>
+function Invoke-Native([scriptblock] $Native) {
+    <# Run a native command with $ErrorActionPreference relaxed. Under "Stop",
+       Windows PowerShell turns native stderr lines into script-killing throws
+       whenever stderr is redirected -- explicitly (2>&1), or wholesale when
+       the whole script runs with a non-console stderr (remoting, endpoint
+       management). Healthy tools write there (java -version, pip notices), so
+       success is judged by the exit code, which every call site checks.
+       Genuine launch failures (blocked or missing exe) still throw. #>
     $eap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    try {
-        # capture, THEN read $LASTEXITCODE: piping into Select-Object -First
-        # short-circuits the pipeline and leaves the exit code stale/unset.
-        $out = & $Exe @ToolArgs 2>&1
-        return @{ Output = $out; ExitCode = $LASTEXITCODE }
-    } finally {
-        $ErrorActionPreference = $eap
-    }
+    try { & $Native } finally { $ErrorActionPreference = $eap }
+}
+
+function Invoke-Tool([string] $Exe, [string[]] $ToolArgs) {
+    <# Probe a tool, returning its merged output and exit code. #>
+    # capture, THEN read $LASTEXITCODE: piping into Select-Object -First
+    # short-circuits the pipeline and leaves the exit code stale/unset.
+    $out = Invoke-Native { & $Exe @ToolArgs 2>&1 }
+    return @{ Output = $out; ExitCode = $LASTEXITCODE }
 }
 
 function Find-Offline([string] $Pattern) {
@@ -144,11 +146,11 @@ function Invoke-Winget([string] $Id, [string] $Label) {
     # but not every package offers a machine installer -- fall back rather than
     # leave the tool uninstalled.
     Write-Host "   installing $Label via winget ($Id), machine scope..."
-    winget install --id $Id --scope machine --silent `
-        --accept-package-agreements --accept-source-agreements
+    Invoke-Native { winget install --id $Id --scope machine --silent `
+        --accept-package-agreements --accept-source-agreements }
     if ($LASTEXITCODE -ne 0) {
         Write-Note "$Label has no machine-scope installer; retrying without --scope."
-        winget install --id $Id --silent --accept-package-agreements --accept-source-agreements
+        Invoke-Native { winget install --id $Id --silent --accept-package-agreements --accept-source-agreements }
     }
     if ($LASTEXITCODE -ne 0) {
         Write-Fail "$Label install returned exit code $LASTEXITCODE."
@@ -191,9 +193,9 @@ if (Get-Command java -ErrorAction SilentlyContinue) {
     if ($msi) {
         Write-Host "   installing from $msi ..."
         # ADDLOCAL: install the launcher AND register it on the system PATH
-        $args = @("/i", "`"$msi`"", "/quiet", "/norestart",
-                  "ADDLOCAL=FeatureMain,FeatureEnvironment,FeatureJavaHome")
-        $p = Start-Process msiexec.exe -ArgumentList $args -Wait -PassThru
+        $msiArgs = @("/i", "`"$msi`"", "/quiet", "/norestart",
+                     "ADDLOCAL=FeatureMain,FeatureEnvironment,FeatureJavaHome")
+        $p = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -PassThru
         if ($p.ExitCode -ne 0) { Write-Fail "Java MSI returned exit code $($p.ExitCode)." }
         Update-SessionPath
     } else {
@@ -269,7 +271,7 @@ if (Get-Command verapdf -ErrorAction SilentlyContinue) {
 "@ | Set-Content -Path $auto -Encoding utf8
 
         Write-Host "   running the unattended veraPDF install into $VeraPdfHome ..."
-        & java -jar $jar.FullName $auto
+        Invoke-Native { & java -jar $jar.FullName $auto }
         if ($LASTEXITCODE -ne 0) { throw "installer exit code $LASTEXITCODE" }
         Add-MachinePath $VeraPdfHome
         Write-Ok "veraPDF installed"
@@ -310,12 +312,12 @@ if ($existing -and $existing.Source -notlike "$env:USERPROFILE*") {
             # an isolated venv: never pollutes the system Python's site-packages
             if (-not (Test-Path (Join-Path $odlHome "Scripts\python.exe"))) {
                 Write-Host "   creating the tool environment in $odlHome ..."
-                & $exeName @($baseArgs + @("-m", "venv", $odlHome))
+                Invoke-Native { & $exeName @($baseArgs + @("-m", "venv", $odlHome)) }
                 if ($LASTEXITCODE -ne 0) { throw "venv creation exit code $LASTEXITCODE" }
             }
             $venvPy = Join-Path $odlHome "Scripts\python.exe"
             Write-Host "   installing $target ..."
-            & $venvPy @("-m", "pip", "install", "--quiet", "--upgrade", $target)
+            Invoke-Native { & $venvPy @("-m", "pip", "install", "--quiet", "--upgrade", $target) }
             if ($LASTEXITCODE -ne 0) { throw "pip exit code $LASTEXITCODE" }
 
             # The shim calls `python -m`, NOT the generated .exe launcher: those
@@ -332,6 +334,24 @@ rem SPEADE machine-wide launcher for the tagging engine (see scripts/setup-machi
         } catch {
             Write-Fail "OpenDataLoader install failed: $($_.Exception.Message). Born-digital tagging will not run."
         }
+    }
+}
+
+# --- crash forensics ---------------------------------------------------------
+# WER LocalDumps: when the review app dies in native code (the recorded crashes
+# were faults inside pdfium.dll -- invisible to Python), Windows keeps a
+# minidump in %LOCALAPPDATA%\CrashDumps so IT/dev can name the faulting module
+# instead of guessing. Scoped to the SPEADE executables only, never machine-wide.
+Write-Step "Crash dumps for the SPEADE app (WER LocalDumps)"
+foreach ($exe in @("speade-desktop.exe")) {
+    try {
+        $key = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\$exe"
+        New-Item -Path $key -Force | Out-Null
+        Set-ItemProperty -Path $key -Name DumpType -Value 1 -Type DWord    # minidump
+        Set-ItemProperty -Path $key -Name DumpCount -Value 10 -Type DWord  # keep last 10
+        Write-Ok "$exe crashes will leave a minidump in %LOCALAPPDATA%\CrashDumps"
+    } catch {
+        Write-Note "could not register LocalDumps for $exe ($($_.Exception.Message)) -- crashes still work, they just leave no dump"
     }
 }
 

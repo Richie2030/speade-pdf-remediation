@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -722,6 +723,92 @@ def test_decide_moves_the_pdf_into_its_status_folder(tmp_path):
     )
     assert not (tmp_path / "outbox" / "approved" / "a.pdf").exists()
     assert (tmp_path / "outbox" / "rejected" / "a.pdf").is_file()
+
+
+def test_decide_with_a_locked_file_still_records_the_decision(tmp_path, monkeypatch):
+    # Windows integrity hole found by the crash investigation: a preview render
+    # or an Acrobat window holds the draft open, and the status-folder move
+    # dies with PermissionError. The DECISION must survive that -- recorded on
+    # the sidecar, audit-logged, and flagged -- never a document that reads
+    # approved with no audit line (or vice versa).
+    config = _write_config(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+    service.run_batch(None, config)
+    # first decide: the file is "open in Acrobat" (move refused); afterwards
+    # it is closed, so the SECOND decide's move goes through for real.
+    real_replace = service._replace_with_retry
+    calls = {"n": 0}
+
+    def acrobat_then_closed(src, dest, attempts=5):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise PermissionError(13, "in use")
+        real_replace(src, dest, attempts)
+
+    monkeypatch.setattr(service, "_replace_with_retry", acrobat_then_closed)
+
+    sidecar = service.decide(
+        tmp_path / "outbox" / "a.pdf", reviewer="s1", approve=True, config_path=config
+    )
+
+    assert sidecar.approval.status == ApprovalStatus.APPROVED
+    assert "decide-move-failed-file-in-use" in sidecar.flags
+    assert (tmp_path / "outbox" / "a.pdf").is_file()  # stayed put, not lost
+    persisted = Sidecar.model_validate_json(
+        (tmp_path / "sidecars" / "a.pdf.sidecar.json").read_text(encoding="utf-8")
+    )
+    assert "decide-move-failed-file-in-use" in persisted.flags
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "audit" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-1]["event"] == "verify"
+    assert events[-1]["move_failed"] is True
+    assert "moved_to" not in events[-1]
+
+    # the reviewer closes Acrobat and decides again: the move now lands and the
+    # stale failure flag must NOT stick to the sidecar forever.
+    redone = service.decide(
+        tmp_path / "outbox" / "a.pdf", reviewer="s1", approve=True, config_path=config
+    )
+    assert "decide-move-failed-file-in-use" not in redone.flags
+    assert (tmp_path / "outbox" / "approved" / "a.pdf").is_file()
+    persisted = Sidecar.model_validate_json(
+        (tmp_path / "sidecars" / "a.pdf.sidecar.json").read_text(encoding="utf-8")
+    )
+    assert "decide-move-failed-file-in-use" not in persisted.flags
+
+
+def test_decide_audit_line_lands_before_the_sidecar_claims_the_status(tmp_path, monkeypatch):
+    # trust-trail ordering: if the audit append dies, the sidecar must NOT yet
+    # claim the decision -- the document resurfaces for a repeat decision. The
+    # reverse order would leave an APPROVED document with no audit event.
+    config = _write_config(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+    service.run_batch(None, config)
+    monkeypatch.setattr(service, "append_event", Mock(side_effect=OSError("disk full")))
+
+    with pytest.raises(OSError, match="disk full"):
+        service.decide(
+            tmp_path / "outbox" / "a.pdf", reviewer="s1", approve=True, config_path=config
+        )
+
+    persisted = Sidecar.model_validate_json(
+        (tmp_path / "sidecars" / "a.pdf.sidecar.json").read_text(encoding="utf-8")
+    )
+    assert persisted.approval.status == ApprovalStatus.DRAFT  # not yet claimed
+
+
+def test_replace_with_retry_survives_transient_sharing_violations(monkeypatch):
+    # the lock a render holds lasts milliseconds: two refusals then success
+    # must land the move without surfacing an error.
+    monkeypatch.setattr(service.time, "sleep", lambda _s: None)
+    src = Mock()
+    src.replace = Mock(side_effect=[PermissionError(13, "busy"), PermissionError(13, "busy"), None])
+
+    service._replace_with_retry(src, Path("dest.pdf"))
+
+    assert src.replace.call_count == 3
 
 
 def test_find_output_checks_the_status_folders(tmp_path):

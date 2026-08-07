@@ -97,6 +97,9 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     cfg = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
     bridge = SpeadeApi(cfg)  # headless: no window; uploads replace the native dialog
     app = FastAPI(title="SPEADE PDF Accessibility", docs_url=None, redoc_url=None)
+    # __main__ calls bridge.shutdown() after uvicorn returns: a Ctrl+C mid-batch
+    # must not let exit finalizers race the worker's native pdfium call.
+    app.state.bridge = bridge
 
     # ------------------------------------------------------------- the UI
     @app.get("/")

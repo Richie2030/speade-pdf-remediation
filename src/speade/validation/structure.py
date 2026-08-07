@@ -936,7 +936,7 @@ def tag_objects(pdf: Path, page_index: int, object_indexes: list[int], new_type:
     with PDFIUM_LOCK:
         import pypdfium2.raw as raw
 
-        fdoc = pdfium.PdfDocument(str(pdf))
+        fdoc = pdfium.PdfDocument(pdf.read_bytes())  # bytes: no lingering file handle
         try:
             fpage = fdoc[page_index]
             marked: list[bool] = []
@@ -1263,7 +1263,7 @@ def structure_tree(pdf: Path) -> StructureTree:
 
 
 def _structure_tree_unlocked(pdf: Path, pikepdf, pdfium) -> StructureTree:
-    fpdf = pdfium.PdfDocument(str(pdf))
+    fpdf = pdfium.PdfDocument(pdf.read_bytes())  # bytes: no lingering file handle
     try:
         geo, untagged_pages = _page_geometry(fpdf)
         loose = [ref for page_refs in untagged_pages for ref in page_refs]

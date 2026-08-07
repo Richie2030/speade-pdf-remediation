@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+import time
 from collections.abc import Callable
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
@@ -795,6 +796,23 @@ def export_history(config_path: Path = DEFAULT_CONFIG_PATH) -> Path:
     return out
 
 
+def _replace_with_retry(src: Path, dest: Path, attempts: int = 5) -> None:
+    """`os.replace` with a short backoff for Windows sharing violations: a
+    preview render or an Acrobat window holds a native read handle on the draft
+    for a beat, and the atomic move surfaces that as PermissionError (WinError
+    5/32). Transient in practice -- retry briefly before giving up."""
+    delay = 0.1
+    for attempt in range(attempts):
+        try:
+            src.replace(dest)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+            delay *= 2
+
+
 def decide(
     pdf: Path,
     reviewer: str,
@@ -830,20 +848,37 @@ def decide(
     status = ApprovalStatus.APPROVED if approve else ApprovalStatus.REJECTED
     clear_undo(ws, pdf.name)  # the decision closes this editing session
     sidecar.approval = Approval(status=status, reviewer=reviewer, decided_at=datetime.now(UTC))
-    side_path.write_text(sidecar.model_dump_json(indent=2), encoding="utf-8", newline="\n")
 
-    # sort the decided document into its status subfolder, so the outbox itself
-    # reads as a workflow: root = awaiting review, approved/ = ready to ship,
-    # rejected/ = needs manual rework. Only files inside the outbox tree move --
+    # sort the decided document into its status subfolder FIRST, so the audit
+    # line can record where the bytes actually ended up: the outbox itself
+    # reads as a workflow (root = awaiting review, approved/ = ready to ship,
+    # rejected/ = needs manual rework). Only files inside the outbox tree move --
     # a decision on a PDF elsewhere (CLI with an odd path) records but stays put.
+    # A move the retries cannot land (the draft open in Acrobat, a render mid-
+    # flight) does NOT void the decision: it is recorded, the file stays put,
+    # and a sidecar flag tells the reviewer/admin to move it.
     moved_to: str | None = None
+    move_failed = False
+    # this decision supersedes any earlier failed move: drop the stale flag so
+    # a successful re-decide (Acrobat closed) does not read as still stuck.
+    if "decide-move-failed-file-in-use" in sidecar.flags:
+        sidecar.flags.remove("decide-move-failed-file-in-use")
     dest_dir = ws.outbox / ("approved" if approve else "rejected")
     outbox_tree = (ws.outbox, ws.outbox / "approved", ws.outbox / "rejected")
     if pdf.resolve().parent in outbox_tree and pdf.resolve().parent != dest_dir:
         dest_dir.mkdir(parents=True, exist_ok=True)
-        pdf.resolve().replace(dest_dir / pdf.name)
-        moved_to = f"outbox/{dest_dir.name}"
+        try:
+            _replace_with_retry(pdf.resolve(), dest_dir / pdf.name)
+            moved_to = f"outbox/{dest_dir.name}"
+        except PermissionError:
+            move_failed = True
+            sidecar.flags.append("decide-move-failed-file-in-use")
 
+    # trust trail BEFORE state: the audit line lands before the sidecar claims
+    # the new status, so no document can ever read APPROVED/REJECTED without
+    # its audit event. The inverse failure (audit written, sidecar write dies)
+    # just resurfaces the document for a repeat decision -- a duplicate line in
+    # an append-only log, never a missing one.
     append_event(
         ws.audit_log,
         {
@@ -855,6 +890,8 @@ def decide(
             "verapdf_passed": vera.passed,
             "output_sha256": sidecar.output_sha256,
             **({"moved_to": moved_to} if moved_to else {}),
+            **({"move_failed": True} if move_failed else {}),
         },
     )
+    side_path.write_text(sidecar.model_dump_json(indent=2), encoding="utf-8", newline="\n")
     return sidecar
