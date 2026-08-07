@@ -40,7 +40,7 @@ const STAGE_TEXT = {
 
 const FLAG_TEXT = {
   "tag-skipped-needs-ocr": "Not tagged, needs text recognition first",
-  "tag-skipped-already-tagged": "Already had tags, left untouched",
+  "tag-skipped-already-tagged": "Already had tags, kept them (standards metadata topped up)",
   "tag-skipped-unreadable": "Not tagged, the file is unreadable",
   "tag-unavailable": "Not tagged, the tagging engine is missing or blocked on this PC",
   "tag-ran-on-unknown-route": "Mixed content, check every part got tagged",
@@ -154,7 +154,7 @@ function processedText(item) {
     return "Could not be processed, the file is unreadable";
   }
   if (item.flags.includes("tag-skipped-already-tagged")) {
-    return "Already had accessibility tags, left as it was";
+    return "Already had accessibility tags, kept them (standards metadata topped up)";
   }
   if (item.flags.includes("tag-skipped-needs-ocr")) {
     return "Scanned document, NOT tagged (text recognition did not run)";

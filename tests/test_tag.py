@@ -7,6 +7,8 @@ cover the routing + orchestration without needing the real engine or Java:
     invoked, and the PDF is left untouched;
   - an unreadable doc (encrypted/corrupt, `unreadable-*` flagged by detect) is
     SKIPPED the same way -- reason already on the sidecar, human gate decides;
+  - an already-tagged doc skips the ENGINE (do-not-degrade) but still gets the
+    metadata finish -- publisher tags kept, conformance bits stamped;
   - an unknown (mixed) doc is tagged ANYWAY, with a reviewer flag (P1.4 policy);
   - a born-digital doc invokes the engine and returns a NEW tagged file, never
     mutating its input in place;
@@ -98,19 +100,27 @@ def test_unreadable_input_skips_engine_and_flags(tmp_path, monkeypatch):
     pdf.write_bytes(_PDF_BYTES)
     sidecar = _sidecar(Route.UNKNOWN)
     sidecar.flags.append("unreadable-encrypted-password-required")
+    # unreadable must WIN over already_tagged (branch order in run()): the
+    # metadata finish on an encrypted/corrupt file would only fall back to a
+    # verbatim copy dressed up as a finished draft.
+    sidecar.already_tagged = True
 
     result = stage.run(pdf, sidecar)
 
     assert result.changed is False
     assert "tag-skipped-unreadable" in result.sidecar.flags
+    assert "tag-skipped-already-tagged" not in result.sidecar.flags
     assert result.output == pdf
     assert calls == []  # engine never invoked on an unreadable doc
     assert pdf.read_bytes() == _PDF_BYTES
 
 
-def test_already_tagged_pdf_skips_engine_and_flags(tmp_path, monkeypatch):
+def test_already_tagged_pdf_skips_engine_but_gets_the_finish(tmp_path, monkeypatch):
     # never clobber an existing structure tree: even a born-digital doc must skip
-    # the engine when it is already tagged, and be left untouched.
+    # the ENGINE when it is already tagged. But live journal PDFs arrive
+    # publisher-tagged and still fail UA-1 on pure metadata clauses, so the
+    # pikepdf finish DOES run -- on a new file, the input untouched.
+    pikepdf = pytest.importorskip("pikepdf", reason="needs --extra tag")
     calls = []
     stage = TagStage()
     monkeypatch.setattr(
@@ -118,19 +128,27 @@ def test_already_tagged_pdf_skips_engine_and_flags(tmp_path, monkeypatch):
     )
 
     pdf = tmp_path / "doc.pdf"
-    pdf.write_bytes(_PDF_BYTES)
+    src = pikepdf.Pdf.new()
+    src.add_blank_page()
+    src.save(pdf)
+    original_bytes = pdf.read_bytes()
     sidecar = Sidecar(
         source_path="doc.pdf", source_sha256="0", route=Route.BORN_DIGITAL, already_tagged=True
     )
 
     result = stage.run(pdf, sidecar)
 
-    assert result.changed is False
+    assert result.changed is True
     assert "tag-skipped-already-tagged" in result.sidecar.flags
     assert result.sidecar.stages_applied == ["tag"]
-    assert result.output == pdf
     assert calls == []  # engine never invoked on an already-tagged doc
-    assert pdf.read_bytes() == _PDF_BYTES
+    assert result.output == tmp_path / "doc.tagged.pdf"  # NEW file...
+    assert pdf.read_bytes() == original_bytes  # ...input byte-identical
+    with pikepdf.open(result.output) as doc:  # the finish really ran
+        assert bool(doc.Root.MarkInfo.Marked) is True
+        assert str(doc.Root.Lang) == "en"
+        with doc.open_metadata() as meta:
+            assert meta["pdfuaid:part"] == "1"
 
 
 def test_born_digital_route_invokes_engine_and_writes_new_file(tmp_path, monkeypatch):
@@ -246,6 +264,121 @@ def test_finish_stamps_conformance_bits_and_original_title(tmp_path, monkeypatch
         with doc.open_metadata() as meta:
             assert meta["dc:title"] == "doc"
             assert meta["pdfuaid:part"] == "1"
+
+
+def _link_annotation(pikepdf_mod):
+    """A minimal URI link annotation -- the journal-article shape (DOI/citation
+    links on every page) that exposed veraPDF clause 7.18.3 live."""
+    return pikepdf_mod.Dictionary(
+        Type=pikepdf_mod.Name.Annot,
+        Subtype=pikepdf_mod.Name.Link,
+        Rect=[72, 72, 200, 90],
+        Border=[0, 0, 0],
+        A=pikepdf_mod.Dictionary(
+            Type=pikepdf_mod.Name.Action,
+            S=pikepdf_mod.Name.URI,
+            URI=pikepdf_mod.String("https://example.org"),
+        ),
+    )
+
+
+def test_finish_stamps_tabs_on_annotated_pages_only(tmp_path, monkeypatch):
+    # veraPDF UA-1 clause 7.18.3: every page carrying an annotation needs
+    # /Tabs /S. The live journal corpus failed this on ALL six documents --
+    # real articles are wall-to-wall link annotations. Pages without
+    # annotations must be left alone (minimal, clause-precise stamp).
+    pikepdf = pytest.importorskip("pikepdf", reason="needs --extra tag")
+
+    def fake_run(cmd, **kwargs):
+        outdir = Path(cmd[cmd.index("--output-dir") + 1])
+        engine_out = pikepdf.Pdf.new()
+        engine_out.add_blank_page()  # page 0: gets a link annotation
+        engine_out.add_blank_page()  # page 1: no annotations
+        engine_out.pages[0].obj[pikepdf.Name("/Annots")] = pikepdf.Array(
+            [engine_out.make_indirect(_link_annotation(pikepdf))]
+        )
+        engine_out.save(outdir / "doc.tagged.pdf")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(tag_module.subprocess, "run", fake_run)
+
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(_PDF_BYTES)
+
+    result = TagStage().run(pdf, _sidecar(Route.BORN_DIGITAL))
+
+    with pikepdf.open(result.output) as doc:
+        assert doc.pages[0].obj.Tabs == pikepdf.Name("/S")  # annotated page stamped
+        assert "/Tabs" not in doc.pages[1].obj  # untouched page left alone
+
+
+def test_finish_preserves_existing_metadata_do_not_degrade(tmp_path, monkeypatch):
+    # The finish also runs on publisher-tagged PDFs now, so stamps are additive
+    # where UA-1 allows it: an existing /Lang (e.g. Irish), extra MarkInfo /
+    # ViewerPreferences entries, and a real dc:title all survive. Where UA-1
+    # FIXES the value the finish overwrites -- a pinned decision, not an
+    # accident: /Tabs must be S (7.18.3) and Suspects must not stay true (7.1-4,
+    # "Automatic (SPEADE)" in docs/verapdf-clauses.md); the human gate, not a
+    # publisher's stale hint, judges whether the tags are actually good.
+    pikepdf = pytest.importorskip("pikepdf", reason="needs --extra tag")
+
+    pdf = tmp_path / "doc.pdf"
+    src = pikepdf.Pdf.new()
+    src.add_blank_page()
+    src.Root.Lang = pikepdf.String("ga")
+    src.Root.MarkInfo = pikepdf.Dictionary({"/Marked": False, "/Suspects": True})
+    src.Root.ViewerPreferences = pikepdf.Dictionary({"/HideToolbar": True})
+    src.pages[0].obj[pikepdf.Name("/Annots")] = pikepdf.Array(
+        [src.make_indirect(_link_annotation(pikepdf))]
+    )
+    src.pages[0].obj[pikepdf.Name("/Tabs")] = pikepdf.Name("/R")  # publisher row order
+    with src.open_metadata() as meta:
+        meta["dc:title"] = "An teideal foilsitheora"
+    src.save(pdf)
+    sidecar = Sidecar(
+        source_path="doc.pdf", source_sha256="0", route=Route.BORN_DIGITAL, already_tagged=True
+    )
+
+    result = TagStage().run(pdf, sidecar)
+
+    with pikepdf.open(result.output) as doc:
+        assert str(doc.Root.Lang) == "ga"  # NOT clobbered to "en"
+        assert bool(doc.Root.MarkInfo.Marked) is True  # stamped...
+        assert bool(doc.Root.MarkInfo.Suspects) is False  # ...suspects hint cleared (7.1-4)
+        assert bool(doc.Root.ViewerPreferences.DisplayDocTitle) is True
+        assert bool(doc.Root.ViewerPreferences.HideToolbar) is True
+        assert doc.pages[0].obj.Tabs == pikepdf.Name("/S")  # /R overwritten (7.18.3)
+        with doc.open_metadata() as meta:
+            assert meta["dc:title"] == "An teideal foilsitheora"  # kept
+            assert meta["pdfuaid:part"] == "1"
+
+
+def test_finish_failure_falls_back_to_a_verbatim_copy(tmp_path, monkeypatch):
+    # The finish is best-effort by contract: if pikepdf cannot process the file,
+    # the raw PDF ships verbatim and the veraPDF gate flags the residual gap
+    # (the file simply keeps failing the clauses the finish would have closed --
+    # never a crash, never a lost batch item). Pin that on the already-tagged
+    # path, where the fallback is now load-bearing.
+    pikepdf = pytest.importorskip("pikepdf", reason="needs --extra tag")
+
+    def boom(*_args, **_kwargs):
+        raise pikepdf.PdfError("synthetic finish failure")
+
+    # _finish_pdf_ua imports pikepdf lazily; patching the module singleton's
+    # `open` is what that late import sees.
+    monkeypatch.setattr(pikepdf, "open", boom)
+
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(_PDF_BYTES)
+    sidecar = Sidecar(
+        source_path="doc.pdf", source_sha256="0", route=Route.BORN_DIGITAL, already_tagged=True
+    )
+
+    result = TagStage().run(pdf, sidecar)
+
+    assert result.output == tmp_path / "doc.tagged.pdf"
+    assert result.output.read_bytes() == _PDF_BYTES  # verbatim copy, nothing invented
+    assert pdf.read_bytes() == _PDF_BYTES  # input untouched either way
 
 
 def test_ocr_layered_pages_keep_their_background_but_hide_it_from_the_engine(tmp_path, monkeypatch):

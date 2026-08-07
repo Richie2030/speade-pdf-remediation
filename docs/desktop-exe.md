@@ -8,7 +8,7 @@ answered in one place.
 From the repo root:
 
 ```
-uv run --all-extras --with pyinstaller python -m PyInstaller --noconfirm speade-desktop.spec
+uv run --all-extras --with "pyinstaller==6.21.0" python -m PyInstaller --noconfirm speade-desktop.spec
 copy config.yaml dist\speade-desktop\
 ```
 
@@ -24,8 +24,8 @@ Why it's built this way:
 - `--onedir` on purpose, never `--onefile`: a single-file exe self-extracts to
   `%TEMP%` on every launch, which is exactly what App Control / antivirus flags
   (see `docs/decisions/frontend-delivery.md`).
-- PyInstaller is a build-time tool only (`--with pyinstaller`); it is never a
-  shipped dependency.
+- PyInstaller is a build-time tool only (`--with "pyinstaller==6.21.0"`); it is
+  never a shipped dependency.
 - The system engines — Java 11+ with OpenDataLoader, Tesseract, veraPDF — are
   **not** bundled. They must be installed on the machine that runs the exe
   (see `docs/runbook.md`).

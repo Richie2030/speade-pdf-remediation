@@ -135,17 +135,23 @@ class TagStage:
             return StageResult(stage=self.name, output=pdf, sidecar=sidecar, changed=False)
 
         # never clobber an existing structure tree (do-not-degrade): an already
-        # tagged PDF skips the engine and flows to the gate untouched.
+        # tagged PDF skips the ENGINE -- its tags are kept verbatim -- but still
+        # gets the metadata finish (Tabs / Lang / DisplayDocTitle / pdfuaid),
+        # which touches no structure. Live journal PDFs arrive publisher-tagged
+        # yet fail veraPDF UA-1 on exactly these metadata clauses; skipping the
+        # finish too left them failing on bits we already know how to stamp.
         if sidecar.already_tagged:
             sidecar.flags.append(
                 "tag-skipped-already-tagged"
-            )  # Goes straight to human verification
+            )  # engine skipped; the human gate judges the existing tags
             sidecar.applied(self.name)
+            out = pdf.with_name(f"{pdf.stem}.tagged.pdf")  # NEW file, never mutate input
+            self._finish_pdf_ua(pdf, out, title=Path(sidecar.source_path).stem)
             return StageResult(
                 stage=self.name,
-                output=pdf,
+                output=out,
                 sidecar=sidecar,
-                changed=False,
+                changed=True,
             )
 
         # tagging needs real text: a scanned (image-only) doc must be OCR'd first.
@@ -266,9 +272,17 @@ class TagStage:
     @staticmethod
     def _finish_pdf_ua(tagged: Path, out: Path, title: str, lang: str = DEFAULT_LANG) -> None:
         """Stamp with pikepdf the PDF/UA-1 conformance bits the free tagger leaves off:
-        MarkInfo, the catalog language (/Lang), ViewerPreferences/DisplayDocTitle, and the
-        XMP pdfuaid identifier + dc:title. These close the metadata/language veraPDF UA-1
-        clauses (7.1-9, 7.1-10, 7.2-22, 7.2-34) that OpenDataLoader's structure tags omit.
+        MarkInfo, the catalog language (/Lang), ViewerPreferences/DisplayDocTitle, /Tabs on
+        annotated pages, and the XMP pdfuaid identifier + dc:title. These close the
+        metadata/language veraPDF UA-1 clauses (7.1-9, 7.1-10, 7.2-22, 7.2-34, 7.18.3)
+        that OpenDataLoader's structure tags omit.
+
+        The stamps are additive where UA-1 allows it (do-not-degrade): existing
+        MarkInfo / ViewerPreferences entries, a document /Lang, and a dc:title survive
+        -- this also runs on publisher-tagged PDFs whose metadata must not be
+        clobbered. Where UA-1 fixes the value, we overwrite: /Tabs must be S (7.18.3)
+        and Suspects must not be true (7.1-4) -- conformance claims the veraPDF + human
+        gate then judge, exactly like pdfuaid:part.
 
         Best-effort: if pikepdf is unavailable or cannot process the file, ship the raw
         tagged PDF and let the veraPDF gate flag any residual gap -- the structure tags are
@@ -278,10 +292,24 @@ class TagStage:
             import pikepdf
 
             with pikepdf.open(tagged) as doc:
-                doc.Root.MarkInfo = pikepdf.Dictionary({"/Marked": True})
-                doc.Root.Lang = pikepdf.String(lang)  # 7.2-34 / 7.2-22: determinable language
+                markinfo = doc.Root.get("/MarkInfo", pikepdf.Dictionary())
+                markinfo[pikepdf.Name("/Marked")] = True
+                if markinfo.get("/Suspects"):  # 7.1-4: Suspects, if present, must be false
+                    markinfo[pikepdf.Name("/Suspects")] = False
+                doc.Root.MarkInfo = markinfo
+                # 7.2-34 / 7.2-22: determinable language -- default only when unset.
+                if not str(doc.Root.get("/Lang", "")):
+                    doc.Root.Lang = pikepdf.String(lang)
                 # 7.1-10: viewers must display the title, not the filename.
-                doc.Root.ViewerPreferences = pikepdf.Dictionary({"/DisplayDocTitle": True})
+                prefs = doc.Root.get("/ViewerPreferences", pikepdf.Dictionary())
+                prefs[pikepdf.Name("/DisplayDocTitle")] = True
+                doc.Root.ViewerPreferences = prefs
+                # 7.18.3: every page carrying annotations needs /Tabs /S (tab order
+                # follows the structure tree). Live journal articles are wall-to-wall
+                # link annotations, so without this every one fails the gate.
+                for page in doc.pages:
+                    if page.obj.get("/Annots"):
+                        page.obj[pikepdf.Name("/Tabs")] = pikepdf.Name("/S")
                 with doc.open_metadata() as meta:
                     meta["pdfuaid:part"] = "1"
                     if not meta.get("dc:title"):

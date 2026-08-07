@@ -128,7 +128,7 @@ The "who fixes it" column is a triage guide, not a rule:
 | 7.18.1-2 | Visible annotations have a description (Contents or an Alt on their tag) | Reviewer in Acrobat |
 | 7.18.1-3 | Form fields have a tooltip (TU) or their widgets have Alt descriptions | Reviewer in Acrobat |
 | 7.18.2-1 | No TrapNet (prepress trapping) annotations | Source document / IT |
-| 7.18.3-1 | Pages with annotations set tab order to follow the structure (Tabs = S) | Reviewer in Acrobat |
+| 7.18.3-1 | Pages with annotations set tab order to follow the structure (Tabs = S) | Automatic (SPEADE) |
 | 7.18.4-1 | Every Widget (form control) annotation sits inside a Form tag | Reviewer in Acrobat |
 | 7.18.4-2 | A Form tag without a Role attribute wraps exactly its one widget | Reviewer in Acrobat |
 | 7.18.5-1 | Every Link annotation sits inside a Link tag | Reviewer in Acrobat |

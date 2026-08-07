@@ -36,7 +36,7 @@ all — both from `CLAUDE.md`'s invariants:
 | Role | Tool | Kind | Default? | Licence |
 |---|---|---|---|---|
 | **Tagging** (load-bearing) | **opendataloader-pdf** | Java CLI, subprocess | No — tool install + JRE 11+ | Apache-2.0 (MPL-2.0 pre-v2.0) |
-| ↳ prerequisite | Java JRE 11+ (Temurin 21) | System install | No | — |
+| ↳ prerequisite | Java JRE 11 (Temurin 11.0.29, the pin) | System install | No | — |
 | ↳ UA-1 finish | **pikepdf** | pip, in-process | No — `tag` / `ocr` extras | MPL-2.0 (bundles Apache-2.0 QPDF) |
 | **Detect / routing** | **pypdf** | pip, in-process | Dev checkout only (dev group); **not** in a production install | BSD-3-Clause |
 | **OCR** (stretch) | **Tesseract**, called directly | System CLI, subprocess | No | Apache-2.0 |
@@ -50,12 +50,13 @@ all — both from `CLAUDE.md`'s invariants:
 It is the only component that turns an untagged PDF into a Tagged PDF;
 everything else supports it.
 
-**pikepdf is not a tagger.** It stamps the four PDF/UA-1 conformance bits the
+**pikepdf is not a tagger.** It stamps the five PDF/UA-1 conformance bits the
 ODL free tier omits — `/MarkInfo /Marked`, `/Lang`,
-`ViewerPreferences/DisplayDocTitle`, and XMP `pdfuaid:part` + `dc:title` —
-closing veraPDF clauses 7.1-9, 7.1-10, 7.2-22 and 7.2-34. That ~10-line stamp in
-`_finish_pdf_ua` is what substitutes for ODL's **paid Enterprise PDF/UA export**
-(still paid as of ODL 2.5.0, 2026-07-14). It is load-bearing, not vestigial.
+`ViewerPreferences/DisplayDocTitle`, `/Tabs /S` on annotated pages, and XMP
+`pdfuaid:part` + `dc:title` — closing veraPDF clauses 7.1-9, 7.1-10, 7.2-22,
+7.2-34 and 7.18.3. That small stamp in `_finish_pdf_ua` is what substitutes for
+ODL's **paid Enterprise PDF/UA export** (still paid as of ODL 2.5.0,
+2026-07-14). It is load-bearing, not vestigial.
 
 ## Per role: incumbent vs alternatives
 

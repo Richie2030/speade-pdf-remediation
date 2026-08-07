@@ -82,24 +82,48 @@ def _run(src: Path, tmp_path: Path) -> tuple[Sidecar, Path, Path]:
     return sidecar, outbox / src.name, audit
 
 
-# fixture -> (expected route, expected flags, does the tagging engine run?)
+# fixture -> (expected route, expected flags, expected action)
+#
+# action is what the tag stage did:
+#   "engine" -- untagged: OpenDataLoader tagged it, then the pikepdf finish ran
+#   "finish" -- already tagged: the ENGINE is skipped (do-not-degrade keeps the
+#               existing structure tree verbatim) but the metadata finish still
+#               runs -- publisher-tagged journal PDFs fail UA-1 on pure metadata
+#               clauses (Tabs / DisplayDocTitle / pdfuaid) otherwise
+#   "skip"   -- untaggable here (scanned, unreadable): byte-identical to the gate
 #
 # mixed_text_image carries the seed's structure tree (already_tagged=True) AND
-# routes unknown -- do-not-degrade beats tag-anyway, so the already-tagged skip
-# wins. The tag-anyway-on-unknown policy is covered by the stripped-tags test
-# below (test_untagged_unknown_route_is_tagged_anyway).
+# routes unknown -- do-not-degrade beats tag-anyway, so the engine is skipped.
+# The tag-anyway-on-unknown policy is covered by the stripped-tags test below
+# (test_untagged_unknown_route_is_tagged_anyway).
 CASES = [
-    ("untagged_twin.pdf", "born_digital", [], True),
-    ("rotated_90.pdf", "born_digital", ["tag-skipped-already-tagged"], False),
-    ("ocred_untagged.pdf", "born_digital", [], True),
-    ("tagged_ocred.pdf", "born_digital", ["tag-skipped-already-tagged"], False),
-    ("scanned_nothing.pdf", "scanned", ["tag-skipped-needs-ocr"], False),
-    ("mixed_text_image.pdf", "unknown", ["tag-skipped-already-tagged"], False),
+    ("untagged_twin.pdf", "born_digital", [], "engine"),
+    ("linked_untagged.pdf", "born_digital", [], "engine"),
+    ("rotated_90.pdf", "born_digital", ["tag-skipped-already-tagged"], "finish"),
+    ("ocred_untagged.pdf", "born_digital", [], "engine"),
+    ("tagged_ocred.pdf", "born_digital", ["tag-skipped-already-tagged"], "finish"),
+    ("scanned_nothing.pdf", "scanned", ["tag-skipped-needs-ocr"], "skip"),
+    ("mixed_text_image.pdf", "unknown", ["tag-skipped-already-tagged"], "finish"),
 ]
 
 
-@pytest.mark.parametrize(("name", "route", "flags", "engine"), CASES, ids=[c[0] for c in CASES])
-def test_fixture_flows_through_the_pipeline(name, route, flags, engine, tmp_path):
+def _assert_tabs_on_annotated_pages(reader, expect_annotated: bool = False) -> int:
+    """UA-1 clause 7.18.3 (found live on all six journal PDFs): every page
+    carrying annotations must have /Tabs /S after the finish. Returns the
+    annotated-page count; `expect_annotated` guards the fixtures that exist to
+    exercise this clause -- a corpus rebuild that silently dropped their
+    annotations would otherwise reduce the check to a vacuous pass."""
+    annotated = sum(1 for page in reader.pages if page.get("/Annots"))
+    for page in reader.pages:
+        if page.get("/Annots"):
+            assert page.get("/Tabs") == "/S"
+    if expect_annotated:
+        assert annotated > 0, "fixture was expected to carry annotations"
+    return annotated
+
+
+@pytest.mark.parametrize(("name", "route", "flags", "action"), CASES, ids=[c[0] for c in CASES])
+def test_fixture_flows_through_the_pipeline(name, route, flags, action, tmp_path):
     src = DERIVED / name
     if not src.is_file():
         pytest.skip(f"{name} not in the built corpus")
@@ -125,14 +149,25 @@ def test_fixture_flows_through_the_pipeline(name, route, flags, engine, tmp_path
     assert event["source_sha256"] == sidecar.source_sha256
     assert event["output_sha256"] == sidecar.output_sha256
 
-    if engine:
+    if action == "engine":
         # the engine really tagged it, and the pikepdf finish stamped the
-        # conformance bits (structure tree + MarkInfo + language).
-        root = pypdf.PdfReader(out).root_object
+        # conformance bits (structure tree + MarkInfo + language + Tabs).
+        reader = pypdf.PdfReader(out)
+        root = reader.root_object
         assert "/StructTreeRoot" in root
         assert "/MarkInfo" in root
         assert "/Lang" in root
-    else:
+        _assert_tabs_on_annotated_pages(reader, expect_annotated=name == "linked_untagged.pdf")
+    elif action == "finish":
+        # existing tags kept verbatim, metadata finish applied on top.
+        assert sidecar.output_sha256 != sidecar.source_sha256  # the finish DID run
+        reader = pypdf.PdfReader(out)
+        root = reader.root_object
+        assert "/StructTreeRoot" in root  # do-not-degrade: publisher tags survive
+        assert "/MarkInfo" in root
+        assert "/Lang" in root
+        _assert_tabs_on_annotated_pages(reader)
+    else:  # "skip"
         # a skipped document must flow to the gate byte-identical.
         assert sidecar.output_sha256 == sidecar.source_sha256
 

@@ -8,16 +8,17 @@ JRE, two Java CLIs, and Tesseract.
 | tool | pinned version (frozen v1) | why | install |
 |---|---|---|---|
 | uv + Python 3.13 | Python 3.13.5 | runs speade | `winget install astral-sh.uv` |
-| JRE 11+ (Temurin) | see note below | runs BOTH Java tools below | `winget install EclipseAdoptium.Temurin.21.JRE` |
+| Temurin JRE 11 | **11.0.29** (the tested pin) | runs BOTH Java tools below | `winget install EclipseAdoptium.Temurin.11.JRE` |
 | OpenDataLoader PDF | **2.5.0** | the tagging engine (tag stage) | `uv tool install opendataloader-pdf` |
 | veraPDF | **1.30.2** | the PDF/UA machine gate | unattended install, §4 |
 | Tesseract 5 | **5.5.0** | OCR for scanned PDFs (ocr stage) | `winget install tesseract-ocr.tesseract` |
 
-Canonical version + licence inventory: `docs/tech-stack.md`. **JRE note:** all
-development testing ran on Temurin **11.0.29**; the install command above
-fetches 21 (both satisfy the tools' Java 11+ requirement). Pick ONE for the
-freeze — either pin 11.0.29 (the tested set) or install 21 and re-run the
-smoke test once — and record it in `tech-stack.md`.
+Canonical version + licence inventory: `docs/tech-stack.md`. **JRE note:** the
+frozen pin is **Temurin 11.0.29** (all development testing ran on it). `winget`
+fetches the latest Temurin 11 point release, which is fine to run; for an exact
+reproducible build install from the **archived 11.0.29 installer** kept offline
+with the other pinned installers. Do not upgrade to a newer major (21) without
+re-running the smoke test.
 
 ## 0. the quick path: one script does sections 2–5
 
@@ -63,8 +64,8 @@ launchers can be blocked. Always run tools as modules — `uv run python -m spea
 ## 2. Java (JRE 11+)
 
 ```powershell
-winget install EclipseAdoptium.Temurin.21.JRE
-java -version                  # new terminal; expect 11+
+winget install EclipseAdoptium.Temurin.11.JRE
+java -version                  # new terminal; expect 11.0.x
 ```
 
 ## 3. OpenDataLoader (tagging engine)
@@ -131,7 +132,7 @@ then `... python datasets/build_corpus.py --gate`.
 ## Building the desktop .exe (release packaging)
 
 ```powershell
-uv run --all-extras --with pyinstaller python -m PyInstaller --noconfirm speade-desktop.spec
+uv run --all-extras --with "pyinstaller==6.21.0" python -m PyInstaller --noconfirm speade-desktop.spec
 copy config.yaml dist\speade-desktop\      # the exe reads config from beside itself
 ```
 

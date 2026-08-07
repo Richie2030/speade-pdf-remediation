@@ -1,11 +1,18 @@
 # Decision record: handling already-OCR'd / already-tagged PDFs
 
-- **Status:** **CONFIRMED (2026-08-05)** — `detect`, `tag` and the runner are
-  implemented and behave as decided: an already-tagged document skips the engine
-  and reaches the gate byte-identical, carrying `tag-skipped-already-tagged`.
-  Pinned by `tests/test_corpus_regression.py`. One addition since: the reviewer
-  can now deliberately override this in the app (*Remove all tags*, then re-tag),
-  which is a human decision at the gate, not automation overwriting structure.
+- **Status:** **CONFIRMED (2026-08-05), amended same day** — `detect`, `tag` and
+  the runner are implemented and behave as decided: an already-tagged document
+  skips the **engine** (its structure tree is kept verbatim), carrying
+  `tag-skipped-already-tagged`. Amendment (from the Weird_PDFs round): the
+  pikepdf **metadata finish now still runs** on these documents — `/Tabs`,
+  `/Lang`, `DisplayDocTitle`, `pdfuaid` — because real publisher-tagged journal
+  PDFs failed veraPDF UA-1 on exactly those stampable clauses; so the output is
+  **no longer byte-identical** to the source (the tags are untouched, the
+  catalog/metadata is topped up). Pinned by `tests/test_corpus_regression.py`
+  (the `finish` action) and `tests/test_tag.py`. One addition since: the reviewer
+  can deliberately override the no-re-tag rule in the app (*Remove all tags*,
+  then re-tag), which is a human decision at the gate, not automation
+  overwriting structure.
 - **Date:** 2026-07-09 (confirmed 2026-08-05)
 - **Relates to:** the `detect` stage (`src/speade/stages/detect.py`), the `tag`
   stage (`src/speade/stages/tag.py`), `Route` / `Sidecar` (`src/speade/pipeline/contract.py`),

@@ -124,10 +124,10 @@ audience:
 | You are | Read |
 |---|---|
 | a **reviewer** using the app | [`docs/user-guide.md`](docs/user-guide.md), the printable [`quick-reference.md`](docs/quick-reference.md), and [`acrobat-guide.md`](docs/acrobat-guide.md) for the corrections the app leaves to Acrobat |
-| **IT**, deploying it | [`docs/deployment.md`](docs/deployment.md) (signing, install, admin oversight), [`runbook.md`](docs/runbook.md) (machine setup — `scripts/setup-machine.ps1` automates it), [`security-and-data.md`](docs/security-and-data.md), [`maintainability.md`](docs/maintainability.md) |
-| **leadership**, wanting the shape of it | [`docs/overview.md`](docs/overview.md) and [`limitations.md`](docs/limitations.md) |
+| **IT**, deploying it | [`docs/it-support-request.md`](docs/it-support-request.md) — the one-page ask (start here), then [`deployment.md`](docs/deployment.md) (signing, install, admin oversight), [`runbook.md`](docs/runbook.md) (machine setup — `scripts/setup-machine.ps1` automates it), [`security-and-data.md`](docs/security-and-data.md), [`maintainability.md`](docs/maintainability.md) |
+| **leadership**, wanting the shape of it | [`docs/overview.md`](docs/overview.md), [`limitations.md`](docs/limitations.md), and [`pilot-report.md`](docs/pilot-report.md) — the evaluation template (fill after a pilot run) + live demo script |
 | a **developer** picking this up cold | [`docs/architecture.md`](docs/architecture.md) first, then [`tech-stack.md`](docs/tech-stack.md) for pinned versions and [`docs/decisions/`](docs/decisions/) for why things are the way they are |
-| **testing** the whole app before sign-off | [`docs/self-test-checklist.md`](docs/self-test-checklist.md) — a full manual QA pass, every feature and edge case with its exact pass condition |
+| **testing** the whole app before sign-off | [`docs/laptop-quickstart.md`](docs/laptop-quickstart.md) to get it running on a fresh/university machine, then [`docs/self-test-checklist.md`](docs/self-test-checklist.md) — a full manual QA pass, every feature and edge case with its exact pass condition |
 
 Two references worth knowing exist: [`verapdf-clauses.md`](docs/verapdf-clauses.md)
 decodes every PDF/UA rule code the app can show you, and

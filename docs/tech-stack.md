@@ -25,7 +25,7 @@ the installers archived offline, and change nothing after sign-off.
 | Tagging engine | OpenDataLoader PDF | 2.5.0 | Apache-2.0 | **subprocess** (Java CLI) |
 | PDF/UA validator | veraPDF | 1.30.2 | GPLv3+/MPL dual | **subprocess** (Java CLI) |
 | Java runtime | Temurin OpenJDK | 11.0.29+7 | GPLv2+CE | hosts the two Java tools |
-| Packaging | PyInstaller | via `--with` at build time | GPL-with-exception | **build-time only**, never shipped |
+| Packaging | PyInstaller | **6.21.0** (via `--with` at build) | GPL-with-exception | **build-time only**, never shipped |
 | Tests | pytest | 9.1.1 | MIT | dev only |
 | Lint/format | ruff | 0.15.20 | MIT | dev only |
 
@@ -51,13 +51,18 @@ even possible; the subprocess boundary is how languages talk. `import fitz`
 | What sits where on a deployed machine | `docs/deployment.md` |
 | The licence rules and rationale | `CLAUDE.md` invariants + `docs/decisions/` |
 
-## Open items before final sign-off
+## Version pins — resolved (2026-08-05)
 
-- **Java version mismatch:** `runbook.md` installs Temurin **21**; this machine
-  runs Temurin **11.0.29** (both satisfy the tools' Java 11+ requirement). Pick
-  one — recommend pinning what is actually tested (11.0.29) or upgrading and
-  re-testing once — and make this table, the runbook, `scripts/setup-machine.ps1`
-  and the archived installer all agree.
-- **PyInstaller is unpinned:** the build uses `--with pyinstaller` (latest at
-  build time). Before the final signed build, pin it
-  (`--with "pyinstaller==X.Y"`) and record the version here.
+- **Java: Temurin 11.0.29** (the tested set). `runbook.md`,
+  `scripts/setup-machine.ps1` and this table all install/name the Temurin 11
+  line; the exact reproducible pin is the archived **11.0.29** installer kept
+  offline. Do not move to Temurin 21 without re-running the smoke test.
+- **PyInstaller: 6.21.0** (what the shipped build used, Python 3.13.5). The build
+  command pins it: `--with "pyinstaller==6.21.0"` (in `runbook.md`,
+  `desktop-exe.md`, and the header of `speade-desktop.spec`).
+
+## Still open before final sign-off
+
+- **Archive the pinned installers offline** — Temurin 11.0.29 JRE, OpenDataLoader
+  2.5.0, veraPDF 1.30.2, Tesseract 5.5.0 — so a rebuild years from now needs no
+  network and no version drift.

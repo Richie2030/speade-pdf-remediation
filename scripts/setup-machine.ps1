@@ -172,8 +172,8 @@ if (Get-Command java -ErrorAction SilentlyContinue) {
         if ($p.ExitCode -ne 0) { Write-Fail "Java MSI returned exit code $($p.ExitCode)." }
         Update-SessionPath
     } else {
-        Invoke-Winget "EclipseAdoptium.Temurin.21.JRE" "Temurin JRE" | Out-Null
-        Write-Note "winget installed Temurin 21; the tested set is $($PINNED.Java). Either is Java 11+, but record the choice in docs/tech-stack.md."
+        Invoke-Winget "EclipseAdoptium.Temurin.11.JRE" "Temurin JRE 11" | Out-Null
+        Write-Note "winget installed the latest Temurin 11 JRE; the tested pin is $($PINNED.Java). For an exact reproducible build, install from the archived 11.0.29 installer (use -OfflineDir) instead."
     }
     if (Get-Command java -ErrorAction SilentlyContinue) { Write-Ok "java installed" }
 }
