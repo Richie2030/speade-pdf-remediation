@@ -46,6 +46,7 @@
         <div class="detail-head">
           <h2 id="doc-name"></h2>
           <div class="head-actions">
+            <button id="alt-walk" hidden title="Step through every image in the document and write its description, like Acrobat's Set Alternate Text">Image descriptions&hellip;</button>
             <button id="undo-last" hidden>Undo last change</button>
             <button id="remove-tags" title="Delete the whole tag structure so the document can be tagged from scratch in Acrobat">Remove all tags</button>
             <button id="revert" hidden>Undo all edits (reprocess)</button>
@@ -188,6 +189,34 @@
     </section>
   </main>
 
+  <!-- Set alternate text: a floating stepper over every image, modelled on
+       Acrobat's dialog. Non-modal on purpose: the page behind stays visible and
+       scrolls to each image as the arrows move through them. -->
+  <div id="alt-modal" role="dialog" aria-label="Set alternate text" hidden>
+    <div class="alt-head">
+      <h2>Set alternate text</h2>
+      <button id="alt-close" aria-label="Close (descriptions already saved are kept)">&times;</button>
+    </div>
+    <div class="alt-nav">
+      <button id="alt-prev" aria-label="Save and go to the previous image">&#9664;</button>
+      <span id="alt-count" aria-live="polite">Image 1 of 1</span>
+      <button id="alt-next" aria-label="Save and go to the next image">&#9654;</button>
+    </div>
+    <div class="alt-meta">
+      <label for="alt-text">Alternate text:</label>
+      <label class="alt-deco" title="Decoration only (borders, background art): it leaves the reading order and needs no description">
+        <input type="checkbox" id="alt-decorative"> Decorative figure
+      </label>
+    </div>
+    <textarea id="alt-text" rows="4"
+              placeholder="What the image shows and why it matters"></textarea>
+    <div id="alt-status" class="muted" role="status" aria-live="polite"></div>
+    <div class="alt-actions">
+      <button id="alt-save-close" class="primary">Save &amp; Close</button>
+      <button id="alt-cancel" title="Close without saving this image's text (descriptions already saved are kept)">Cancel</button>
+    </div>
+  </div>
+
   <div id="help-overlay" hidden>
     <div id="help-modal" role="dialog" aria-modal="true" aria-label="Help">
       <div class="help-head">
@@ -230,6 +259,10 @@
           <li><b>One tag</b> - click it (tree or page box): change its type, write
             an image description, mark it decorative, remove a wrapper, or move it
             earlier/later in the reading order.</li>
+          <li><b>All images in one pass</b> - <i>Image descriptions&hellip;</i>
+            (top right) opens a stepper like Acrobat's <i>Set Alternate Text</i>:
+            it walks image by image, you write a description (or tick
+            <i>Decorative figure</i>), and the arrows save as they move.</li>
           <li><b>Many tags</b> - <b>drag a rectangle on a page</b>, like Acrobat.
             The bar that appears can <i>merge them into one tag</i> (the fix for
             over-fragmented text), <i>change all</i>, or <i>mark all decorative</i>.</li>

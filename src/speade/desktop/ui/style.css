@@ -287,6 +287,47 @@ main { flex: 1; display: flex; min-height: 0; }
 #tag-editor button { min-height: 40px; padding: 6px 14px; font-size: 15px; }
 #editor-result { font-size: 14px; }
 
+/* ------------------------------------------- set-alternate-text stepper */
+#alt-modal {
+  position: fixed; top: 110px; right: 36px; z-index: 40; width: 400px;
+  display: flex; flex-direction: column;
+  background: #fff; border: 2px solid var(--ucc-navy); border-radius: 10px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, .35);
+}
+.alt-head {
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--ucc-navy); color: #fff; border-radius: 8px 8px 0 0;
+  padding: 8px 14px;
+}
+.alt-head h2 { margin: 0; font-size: 17px; }
+#alt-close {
+  min-height: 32px; padding: 0 10px; font-size: 20px; line-height: 1;
+  background: transparent; border-color: #fff; color: #fff;
+}
+#alt-close:hover { background: rgba(255, 255, 255, .15); }
+.alt-nav {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 14px 4px;
+}
+.alt-nav button { min-height: 36px; padding: 2px 14px; }
+#alt-count { font-weight: 700; }
+.alt-meta {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 14px 0;
+}
+.alt-meta label { font-size: 15px; font-weight: 600; }
+.alt-deco { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.alt-deco input { width: 18px; height: 18px; accent-color: var(--ucc-navy); }
+#alt-text {
+  margin: 8px 14px 0; font: inherit; font-size: 16px; padding: 8px 10px;
+  border: 2px solid var(--ucc-navy); border-radius: 8px;
+  resize: vertical; min-height: 92px;
+}
+#alt-text:focus-visible { outline: 3px solid var(--ucc-yellow); outline-offset: 1px; }
+#alt-text:disabled { background: var(--bg); color: var(--ink-muted); }
+#alt-status { padding: 6px 14px 0; min-height: 22px; }
+.alt-actions { display: flex; justify-content: center; gap: 10px; padding: 10px 14px 14px; }
+
 /* ---------------------------------------------------------------- help */
 #help-overlay {
   position: fixed; inset: 0; z-index: 50; background: rgba(0, 27, 46, .55);

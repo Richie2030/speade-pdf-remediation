@@ -22,6 +22,7 @@ let untaggedByPage = []; // content with NO tag at all, taggable by a drag
 let bulkSelected = []; // whole tags captured by the last marquee drag
 let bulkLines = []; // individual lines captured by the last marquee drag
 let bulkUntagged = []; // untagged pieces captured by the last marquee drag
+let altWalk = null; // the Set-alternate-text stepper: { figures, at, savedAny }
 
 // ------------------------------------------------- plain-language dictionaries
 const STATUS_TEXT = {
@@ -323,6 +324,11 @@ function typeText(t) {
 async function loadStructure(file, retrying = false) {
   structTree = null;
   structSelectedRow = null;
+  // a structure reload invalidates the stepper's node list: close it silently
+  // (its saves are already in the file; this reload is about to show them).
+  altWalk = null;
+  $("alt-modal").hidden = true;
+  $("alt-walk").hidden = true;
   if (pageObserver) {
     pageObserver.disconnect();
     pageObserver = null;
@@ -379,6 +385,7 @@ async function loadStructure(file, retrying = false) {
     renderTree();
   }
   renderPageStack(file);
+  updateAltWalkButton();
 }
 
 // Inline links (hyperlinked citations) are content, but an academic paper can
@@ -920,6 +927,181 @@ async function markDecorative() {
   $("tag-editor").hidden = true;
 }
 
+// ------------------------------------------- set-alternate-text stepper
+// Acrobat's "Set Alternate Text" workflow: one floating dialog that walks
+// through EVERY image in the document (prev/next), with the page behind
+// scrolling to each one. Each arrow press saves the current image first (the
+// app's one-edit-one-undo-one-recheck convention), so nothing typed is lost.
+
+function collectFigures(nodes, out = []) {
+  for (const node of nodes) {
+    if (node.type === "Figure" || node.type === "Formula") out.push(node);
+    collectFigures(node.kids, out);
+  }
+  return out;
+}
+
+function updateAltWalkButton() {
+  const figures = structTree && structTree.tagged ? collectFigures(structTree.root) : [];
+  const need = figures.filter((f) => !f.alt).length;
+  $("alt-walk").hidden = figures.length === 0;
+  $("alt-walk").textContent = need
+    ? `Image descriptions (${need} needed)…`
+    : "Image descriptions…";
+}
+
+function openAltWalk() {
+  if (!structTree || !structTree.tagged) return;
+  const figures = collectFigures(structTree.root);
+  if (!figures.length) return;
+  const firstMissing = figures.findIndex((f) => !f.alt);
+  altWalk = { figures, at: firstMissing === -1 ? 0 : firstMissing, savedAny: false };
+  $("alt-modal").hidden = false;
+  showAltFigure();
+}
+
+function showAltFigure() {
+  const node = altWalk.figures[altWalk.at];
+  const noun = node.type === "Formula" ? "Formula" : "Image";
+  $("alt-count").textContent = `${noun} ${altWalk.at + 1} of ${altWalk.figures.length}`;
+  $("alt-prev").disabled = altWalk.at === 0;
+  $("alt-next").disabled = altWalk.at === altWalk.figures.length - 1;
+  $("alt-decorative").checked = false;
+  $("alt-text").disabled = false;
+  $("alt-text").value = node.alt || "";
+  // a save message from the arrow press that got us here survives the move
+  const carried = altWalk.carryStatus;
+  altWalk.carryStatus = null;
+  $("alt-status").textContent = carried || (node.alt ? "" : "No description yet.");
+  selectNode(node, { scrollTree: true }); // the page scrolls to the image behind
+  $("alt-text").focus();
+}
+
+function setAltWalkBusy(busy) {
+  for (const id of ["alt-prev", "alt-next", "alt-save-close", "alt-cancel", "alt-close"]) {
+    $(id).disabled = busy;
+  }
+  if (busy) $("alt-status").textContent = "Saving…";
+}
+
+// Saves the image on screen if it changed. Returns false when the save failed
+// (the stepper stays put so nothing is silently dropped).
+async function saveAltWalkCurrent() {
+  const node = altWalk.figures[altWalk.at];
+  const decorative = $("alt-decorative").checked;
+  const text = $("alt-text").value.trim();
+  if (!decorative && text === (node.alt || "").trim()) return true; // unchanged
+  if (decorative && node.text && node.text.trim().length > 3) {
+    const ok = window.confirm(
+      `This ${typeText(node.type)} contains text:\n\n"${node.text.slice(0, 120)}"\n\n` +
+        "Marking it decorative removes it from the reading order, so a screen " +
+        "reader will not read it out. Do that only for decoration.\n\nContinue?"
+    );
+    if (!ok) return false;
+  }
+  setAltWalkBusy(true);
+  const result = decorative
+    ? await api.makeDecorative(selected, node.id)
+    : await api.setFigureAlt(selected, node.id, text);
+  setAltWalkBusy(false);
+  if (result.error) {
+    $("alt-status").textContent = result.error;
+    return false;
+  }
+  altWalk.savedAny = true;
+  const verdict = result.verapdf_passed
+    ? "automatic check now passes"
+    : `automatic check: ${(result.failed_clauses || []).length} issue(s) left`;
+  if (decorative) {
+    // the element is GONE (now an artifact) and every later tag id shifted:
+    // the tree must be re-read before any further edit can be trusted.
+    $("alt-status").textContent = altWalk.carryStatus = `Marked decorative - ${verdict}.`;
+    await reloadAltWalkTree();
+  } else {
+    node.alt = text || null;
+    updateFigureRow(node);
+    $("alt-status").textContent = altWalk.carryStatus =
+      `${text ? "Description saved" : "Description cleared"} - ${verdict}.`;
+  }
+  updateAltWalkButton();
+  return true;
+}
+
+// After a decorative apply: re-fetch the tree, redraw, and rebuild the figure
+// list. The removed figure's successor slides into its slot, so `at` is kept
+// (clamped); with no figures left the stepper simply closes.
+async function reloadAltWalkTree() {
+  const file = selected;
+  const tree = await api.structureTree(file);
+  if (selected !== file || tree.error || !altWalk) {
+    await closeAltWalk();
+    return;
+  }
+  structTree = tree;
+  renderTree();
+  renderPageStack(file);
+  const figures = collectFigures(tree.root);
+  if (!figures.length) {
+    await closeAltWalk();
+    return;
+  }
+  altWalk.figures = figures;
+  altWalk.at = Math.min(altWalk.at, figures.length - 1);
+}
+
+// A saved description updates its tree row in place (no full reload needed:
+// /Alt edits do not change the tree's shape, so every node id stays valid).
+function updateFigureRow(node) {
+  const row = node.__row;
+  if (!row) return;
+  const text = row.querySelector(".ttext");
+  if (text && !node.text) text.textContent = node.alt || "(no description yet)";
+  const flag = row.querySelector(".tflag");
+  if (node.alt) {
+    row.classList.remove("needs-attention");
+    if (flag) flag.remove();
+  } else if (!flag) {
+    row.classList.add("needs-attention");
+    const warn = document.createElement("span");
+    warn.className = "tflag";
+    warn.textContent = "needs description";
+    row.appendChild(warn);
+  }
+}
+
+async function altWalkGo(delta) {
+  if (!altWalk) return;
+  if (altWalk.at + delta < 0 || altWalk.at + delta >= altWalk.figures.length) return;
+  const before = altWalk.figures.length;
+  if (!(await saveAltWalkCurrent())) return; // failed or cancelled: stay put
+  if (!altWalk) return; // the save closed the stepper (last figure went decorative)
+  if (altWalk.figures.length < before && delta > 0) {
+    showAltFigure(); // decorative removed the current one: its successor is already here
+    return;
+  }
+  altWalk.at = Math.min(Math.max(altWalk.at + delta, 0), altWalk.figures.length - 1);
+  showAltFigure();
+}
+
+async function altWalkSaveClose() {
+  if (!altWalk) return;
+  if (!(await saveAltWalkCurrent())) return;
+  await closeAltWalk();
+}
+
+// Cancel / x: the image on screen is NOT saved; descriptions saved while
+// stepping stay in the file (each was its own audited, undoable edit).
+async function closeAltWalk() {
+  const refreshNeeded = altWalk && altWalk.savedAny;
+  altWalk = null;
+  $("alt-modal").hidden = true;
+  if (refreshNeeded) {
+    const file = selected;
+    await refresh(); // the queue chips + "edited" banner reflect the saves
+    if (selected === file) await loadStructure(file);
+  }
+}
+
 async function moveTag(delta) {
   if (!selectedNode) return;
   const button = delta < 0 ? $("move-earlier") : $("move-later");
@@ -1257,6 +1439,16 @@ async function init() {
   };
   $("save-tag-type").onclick = saveTagType;
   $("save-alt").onclick = saveAlt;
+  $("alt-walk").onclick = openAltWalk;
+  $("alt-prev").onclick = () => altWalkGo(-1);
+  $("alt-next").onclick = () => altWalkGo(1);
+  $("alt-save-close").onclick = altWalkSaveClose;
+  $("alt-cancel").onclick = closeAltWalk;
+  $("alt-close").onclick = closeAltWalk;
+  $("alt-decorative").onchange = () => {
+    // decoration needs no description: grey the text out, like Acrobat
+    $("alt-text").disabled = $("alt-decorative").checked;
+  };
   $("make-decorative").onclick = markDecorative;
   $("unwrap-tag").onclick = unwrapTag;
   $("move-earlier").onclick = () => moveTag(-1);
@@ -1282,6 +1474,7 @@ async function init() {
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     $("help-overlay").hidden = true;
+    if (altWalk && !$("alt-close").disabled) closeAltWalk(); // not mid-save
     clearBulkSelection();
   });
 

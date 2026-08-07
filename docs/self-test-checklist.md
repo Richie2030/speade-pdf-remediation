@@ -61,6 +61,13 @@ before pilot · **[edge]** = corner case, note if it fails.
   *original* one (never re-tagged), but the file is *not* byte-identical: the
   finish stamps Tabs/Lang/DisplayDocTitle/pdfuaid on top; it goes straight to
   the gate.
+- [ ] **[core]** Open a document with images → an "Image descriptions…" button
+  appears top right (with a count of missing ones). It opens the *Set alternate
+  text* stepper: "Image 1 of N", the page scrolls to each image, ◀ ▶ move
+  (saving any change first), *Decorative figure* removes the image from the
+  reading order (tree reloads, count shrinks), *Save &amp; Close* keeps the
+  current text, *Cancel* discards only the unsaved one. Every save re-runs the
+  automatic check and lands in History as an image-description edit.
 
 **Skip / re-run logic:**
 
