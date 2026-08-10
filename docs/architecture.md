@@ -12,8 +12,8 @@ of those two clauses.
 ## The shape
 
 ```
-data/inbox/  (your originals — never modified)
-     |
+data/inbox/<MODULE>/  (your originals — never modified; one folder per module,
+     |                 loose root files = the legacy "(no module)" group)
      v
   detect  ──► born-digital | scanned | unknown          ─┐
      |                                                   │ each stage:
@@ -22,14 +22,19 @@ data/inbox/  (your originals — never modified)
    tag    ──► OpenDataLoader structure + PDF/UA finish   │ (PDF + sidecar)
      |                                                  ─┘
      v
-data/outbox/  draft + veraPDF verdict            data/sidecars/  (one record per doc)
-     |                                           data/audit/     (append-only JSONL)
-     v
+data/outbox/<MODULE>/  draft + veraPDF verdict   data/sidecars/<MODULE>/  (records)
+     |                                           data/audit/  (ONE append-only JSONL
+     v                                             across all modules, module field)
   THE HUMAN GATE — review, correct in-app, approve or reject
      |
-     ├──► outbox/approved/   ready to share
-     └──► outbox/rejected/   needs work (Acrobat), then re-approve
+     ├──► outbox/<MODULE>/approved/   ready to share
+     └──► outbox/<MODULE>/rejected/   needs work (Acrobat), then re-approve
 ```
+
+Documents are identified by rel-id (`MG2001/notes.pdf`; bare name = flat
+root); `service.split_id` is the single parser and rejects anything that
+could reach outside the workspace. The review UI's module box scopes
+Add/Process to one module (the Student-Partner rule).
 
 Nothing in that diagram touches a network. There is no server, no database, no
 queue, and no cloud service: the "state" is files on one PC.

@@ -109,7 +109,7 @@ def test_shutdown_stops_the_batch_and_waits_for_the_worker(tmp_path, monkeypatch
     api = _api(tmp_path)
     started = threading.Event()
 
-    def slow_batch(folder, config, progress=None, cancel=None, reprocess=False):
+    def slow_batch(folder, config, progress=None, cancel=None, reprocess=False, module=None):
         started.set()
         while not cancel():  # grinds until someone asks it to stop
             time.sleep(0.01)
@@ -129,6 +129,38 @@ def test_shutdown_stops_the_batch_and_waits_for_the_worker(tmp_path, monkeypatch
 def test_shutdown_without_a_batch_is_a_no_op(tmp_path):
     api = _api(tmp_path)
     api.shutdown(timeout_s=1)  # must not raise with no thread ever started
+
+
+def test_module_round_trip_through_the_bridge(tmp_path):
+    # the whole Student-Partner flow by rel-id: waiting -> scoped batch ->
+    # queue (module-grouped fields) -> preview -> approve into the module tree.
+    api = _api(tmp_path)
+    folder = tmp_path / "inbox" / "MG2001"
+    folder.mkdir()
+    (folder / "a.pdf").write_bytes(PDF_BYTES)
+
+    assert api.modules() == ["MG2001"]
+    assert api.list_pending() == ["MG2001/a.pdf"]
+
+    api.run_batch(module="MG2001")
+
+    queue = api.list_queue()
+    json.dumps(queue)  # the bridge contract
+    assert [(q["file"], q["module"], q["name"]) for q in queue] == [
+        ("MG2001/a.pdf", "MG2001", "a.pdf")
+    ]
+    assert api.load_pdf("MG2001/a.pdf")["data_uri"].startswith("data:application/pdf")
+
+    decided = api.decide("MG2001/a.pdf", reviewer="s1", approve=True)
+    assert decided["status"] == "approved"
+    assert (tmp_path / "outbox" / "MG2001" / "approved" / "a.pdf").is_file()
+
+
+def test_malformed_ids_are_errors_not_crashes(tmp_path):
+    api = _api(tmp_path)
+    assert "error" in api.load_pdf("../../etc/passwd.pdf")
+    assert "error" in api.decide("a/../b.pdf", reviewer="x", approve=True)
+    assert "error" in api.run_batch_start(module="..")
 
 
 def test_structure_reports_errors_as_data_not_crashes(tmp_path):
@@ -217,7 +249,10 @@ def test_decide_resolves_names_under_the_outbox_only(tmp_path, monkeypatch):
 
     result = api.decide("../../inbox/a.pdf", reviewer="x", approve=True)
 
-    assert result["file"] == "a.pdf"  # Path(...).name stripped the traversal
+    # a traversal id is REJECTED outright (split_id refuses it) -- stricter
+    # than the old silent Path(...).name stripping, and nothing gets decided.
+    assert "error" in result
+    assert api.list_queue()[0]["status"] == "draft"  # untouched
 
 
 def test_load_pdf_returns_a_data_uri(tmp_path):
@@ -255,7 +290,9 @@ def test_run_batch_cancel_marks_the_finished_batch(tmp_path, monkeypatch):
     # exactly like a real batch polling `cancel` between documents.
     api = _api(tmp_path)
 
-    def fake_run_batch(folder, config_path, progress=None, cancel=None, reprocess=False):
+    def fake_run_batch(
+        folder, config_path, progress=None, cancel=None, reprocess=False, module=None
+    ):
         deadline = time.monotonic() + 5
         while not cancel() and time.monotonic() < deadline:
             time.sleep(0.01)

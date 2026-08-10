@@ -14,6 +14,13 @@
   </header>
 
   <div class="toolbar">
+    <label id="module-wrap"
+           title="Type your module code first: PDFs are added to and processed for one module at a time">
+      <span>Module</span>
+      <input id="module-code" list="module-list" placeholder="e.g. MG2001"
+             autocomplete="off" spellcheck="false">
+      <datalist id="module-list"></datalist>
+    </label>
     <button id="add">Add PDFs&hellip;</button>
     <button id="run" class="primary">Process PDFs</button>
     <button id="refresh">Refresh list</button>
@@ -35,11 +42,12 @@
     <section id="detail">
       <div id="detail-empty" class="empty">
         <p><b>How it works:</b></p>
-        <p>1. Click <b>Add PDFs&hellip;</b> to pick documents (or drop them in the
-           input folder shown above).</p>
-        <p>2. Click <b>Process PDFs</b>, the app recognises text in scans and adds
-           accessibility tags.</p>
-        <p>3. Pick a document from the list, check it, and record your decision.</p>
+        <p>1. Type your <b>module code</b> in the box top left (e.g. MG2001).</p>
+        <p>2. Click <b>Add PDFs&hellip;</b> to pick documents (or drop them into
+           your module's folder inside the input folder).</p>
+        <p>3. Click <b>Process PDFs</b>, the app recognises text in scans and adds
+           accessibility tags for your module's PDFs.</p>
+        <p>4. Pick a document from the list, check it, and record your decision.</p>
       </div>
 
       <div id="detail-body" hidden>
@@ -224,14 +232,20 @@
         <button id="help-close" aria-label="Close help">&times;</button>
       </div>
       <div class="help-body">
-        <h3>The six steps</h3>
+        <h3>The seven steps</h3>
         <ol>
-          <li><b>Add PDFs&hellip;</b> - they appear under <i>Waiting to process</i>.
+          <li><b>Type your module code</b> (e.g. MG2001) in the box top left.
+            Everything you add and process belongs to that module - each module
+            keeps its own folders, and the sidebar groups documents per module
+            (click a module's name to open or hide its list).</li>
+          <li><b>Add PDFs&hellip;</b> - they appear under your module.
             Aim for about <b>50 at a time</b> - a comfortable amount to review; do
             several batches if a module has more.</li>
-          <li><b>Process PDFs</b> - the app reads scans (OCR) and adds accessibility
-            tags. Already-processed files are skipped automatically, so splitting a
-            big pile into batches costs nothing.</li>
+          <li><b>Process PDFs</b> - processes YOUR module's waiting PDFs only. The
+            app reads scans (OCR) and adds accessibility tags. Already-processed
+            files are skipped automatically, so splitting a big pile into batches
+            costs nothing. Newly processed documents appear at the top; approved
+            and rejected ones tidy themselves away under <i>Done</i>.</li>
           <li><b>Review</b> - click a document. The left side lists every heading,
             paragraph, list, and image; the right side shows the pages with a box
             around each tagged part. Click either side to highlight the other.</li>
@@ -282,6 +296,13 @@
 
         <h3>Common questions</h3>
         <dl>
+          <dt>Why are Add PDFs and Process PDFs greyed out?</dt>
+          <dd>Type your module code first (the box top left). Adding and
+            processing always happen for one module at a time.</dd>
+          <dt>Where did my approved document go?</dt>
+          <dd>Into its module's <i>Done</i> section in the sidebar (click to
+            open), and on disk into that module's <code>approved</code> folder.
+            Nothing is deleted.</dd>
           <dt>Why did it skip some files when I pressed Process?</dt>
           <dd>They were already processed and haven't changed. Replace the file in
             the input folder with a new version to process it again.</dd>

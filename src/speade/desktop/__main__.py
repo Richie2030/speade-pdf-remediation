@@ -1,13 +1,16 @@
 """`python -m speade.desktop` -> the review window."""
 
-import multiprocessing
+import sys
 
 from speade.desktop.app import main
 
 if __name__ == "__main__":
-    # FIRST, before anything else: the sacrificial page renderer uses
-    # multiprocessing spawn, and in the PyInstaller exe the respawned child
-    # re-enters THIS entry point -- freeze_support() is what diverts it into
-    # the worker instead of opening a second review window.
-    multiprocessing.freeze_support()
+    # FIRST, before anything else: in the PyInstaller exe the sacrificial page
+    # renderer is this same exe re-invoked with --render-worker -- divert that
+    # into the worker loop instead of opening a second review window.
+    if "--render-worker" in sys.argv:
+        from speade.render_worker import worker_main_stdio
+
+        worker_main_stdio()
+        sys.exit(0)
     raise SystemExit(main())

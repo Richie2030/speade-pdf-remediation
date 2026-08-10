@@ -113,7 +113,7 @@ def test_run_batch_isolates_per_file_failures(tmp_path, monkeypatch):
 
     real_run = service.runner.run
 
-    def flaky(src, stages, outbox, audit_log, sidecar_dir=None):
+    def flaky(src, stages, outbox, audit_log, sidecar_dir=None, audit_extra=None):
         if src.name == "bad.pdf":
             raise RuntimeError("engine exploded")
         return real_run(src, stages, outbox, audit_log, sidecar_dir=sidecar_dir)
@@ -809,6 +809,166 @@ def test_replace_with_retry_survives_transient_sharing_violations(monkeypatch):
     service._replace_with_retry(src, Path("dest.pdf"))
 
     assert src.replace.call_count == 3
+
+
+# ---------------------------------------------------------------- modules
+# Each module gets its own inbox/outbox/sidecars folder; documents are known
+# everywhere by rel-id ("MG2001/notes.pdf"). The flat root keeps working as
+# the legacy "(no module)" group.
+
+
+def _module_pdf(tmp_path: Path, module: str, name: str = "a.pdf") -> Path:
+    folder = tmp_path / "inbox" / module
+    folder.mkdir(parents=True, exist_ok=True)
+    pdf = folder / name
+    pdf.write_bytes(PDF_BYTES)
+    return pdf
+
+
+def test_module_batch_is_scoped_to_that_module(tmp_path):
+    # the Student-Partner rule: processing MG2001 must not touch AC1100 or the
+    # flat root -- and the outputs land inside MG2001's own outbox folder.
+    config = _write_config(tmp_path)
+    _module_pdf(tmp_path, "MG2001")
+    _module_pdf(tmp_path, "AC1100", "b.pdf")
+    (tmp_path / "inbox" / "loose.pdf").write_bytes(PDF_BYTES)
+
+    items = service.run_batch(None, config, module="MG2001")
+
+    assert [(i.file, i.ok, i.skipped) for i in items] == [("MG2001/a.pdf", True, False)]
+    assert (tmp_path / "outbox" / "MG2001" / "a.pdf").is_file()
+    assert (tmp_path / "sidecars" / "MG2001" / "a.pdf.sidecar.json").is_file()
+    assert not (tmp_path / "outbox" / "AC1100").exists()  # untouched
+    assert not (tmp_path / "outbox" / "loose.pdf").exists()  # untouched
+    # the others still show as waiting, as rel-ids
+    assert service.list_pending(config) == ["loose.pdf", "AC1100/b.pdf"]
+
+
+def test_unscoped_batch_sweeps_root_and_every_module(tmp_path):
+    # CLI parity: `run-batch` with nothing given still does the whole inbox,
+    # each document landing in its own module's tree.
+    config = _write_config(tmp_path)
+    _module_pdf(tmp_path, "MG2001")
+    (tmp_path / "inbox" / "loose.pdf").write_bytes(PDF_BYTES)
+
+    items = service.run_batch(None, config)
+
+    assert sorted(i.file for i in items) == ["MG2001/a.pdf", "loose.pdf"]
+    assert (tmp_path / "outbox" / "MG2001" / "a.pdf").is_file()
+    assert (tmp_path / "outbox" / "loose.pdf").is_file()
+
+
+def test_same_filename_in_two_modules_never_collides(tmp_path):
+    # the latent flaw per-module folders fix: identical filenames from two
+    # modules stay two separate documents through processing AND the gate.
+    config = _write_config(tmp_path)
+    _module_pdf(tmp_path, "MG2001", "week1.pdf")
+    _module_pdf(tmp_path, "AC1100", "week1.pdf")
+    service.run_batch(None, config)
+
+    queue = {item.file: item for item in service.list_queue(config)}
+    assert set(queue) == {"MG2001/week1.pdf", "AC1100/week1.pdf"}
+    assert queue["MG2001/week1.pdf"].module == "MG2001"
+    assert queue["MG2001/week1.pdf"].name == "week1.pdf"
+    assert queue["MG2001/week1.pdf"].updated_at > 0
+
+    # approving MG2001's copy moves it within ITS module tree only
+    service.decide(
+        tmp_path / "outbox" / "MG2001" / "week1.pdf",
+        reviewer="s1",
+        approve=True,
+        config_path=config,
+    )
+    assert (tmp_path / "outbox" / "MG2001" / "approved" / "week1.pdf").is_file()
+    assert (tmp_path / "outbox" / "AC1100" / "week1.pdf").is_file()  # untouched draft
+    queue = {item.file: item.status for item in service.list_queue(config)}
+    assert queue == {"MG2001/week1.pdf": "approved", "AC1100/week1.pdf": "draft"}
+    assert service.find_output("MG2001/week1.pdf", config).parent.name == "approved"
+    # the audit line names the module
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "audit" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-1]["module"] == "MG2001"
+    assert events[-1]["moved_to"] == "outbox/MG2001/approved"
+
+
+def test_reprocess_takes_a_rel_id_and_stays_in_its_module(tmp_path):
+    config = _write_config(tmp_path)
+    _module_pdf(tmp_path, "MG2001")
+    service.run_batch(None, config, module="MG2001")
+    service.decide(
+        tmp_path / "outbox" / "MG2001" / "a.pdf", reviewer="s1", approve=True, config_path=config
+    )
+
+    service.reprocess("MG2001/a.pdf", config)
+
+    assert (tmp_path / "outbox" / "MG2001" / "a.pdf").is_file()  # fresh draft
+    assert not (tmp_path / "outbox" / "MG2001" / "approved" / "a.pdf").exists()
+
+
+def test_split_id_rejects_anything_unsafe():
+    for bad in ("../a.pdf", "a/../b.pdf", "MG2001/x/y.pdf", "approved/a.pdf", "C:/tmp/a.pdf", ""):
+        with pytest.raises(ValueError):
+            service.split_id(bad)
+    assert service.split_id("MG2001/a.pdf") == ("MG2001", "a.pdf")
+    assert service.split_id("a.pdf") == (None, "a.pdf")
+
+
+def test_list_modules_reads_the_workspace_folders(tmp_path):
+    config = _write_config(tmp_path)
+    (tmp_path / "inbox" / "MG2001").mkdir(parents=True)
+    (tmp_path / "outbox" / "AC1100").mkdir(parents=True)
+    # reserved status folders are never modules
+    assert service.list_modules(config) == ["AC1100", "MG2001"]
+
+
+def test_move_tag_boundary_reports_no_move_without_crashing(tmp_path, monkeypatch):
+    # review-caught regression: the module refactor missed move_tag's
+    # moved=False branch (_undo_snapshots grew a module arg) -- clicking
+    # "move earlier" on a first-among-siblings tag raised TypeError and left a
+    # phantom undo snapshot instead of the friendly note.
+    config = _write_config(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+    service.run_batch(None, config)
+    monkeypatch.setattr(
+        service.structure, "move_element", lambda pdf, node_id, delta: {"moved": False}
+    )
+
+    result = service.move_tag(tmp_path / "outbox" / "a.pdf", 3, -1, config_path=config)
+
+    assert result == {"ok": True, "moved": False, "note": "already at the end of its group"}
+    assert service.undo_depth("a.pdf", config) == 0  # no phantom undo step
+
+
+def test_cli_style_runs_do_not_fork_module_documents_into_the_root(tmp_path):
+    # review-caught footgun: `speade run inbox/MG2001/x.pdf` and
+    # `run-batch inbox/MG2001` used to write to the outbox ROOT, forking a
+    # second identity for a document the UI tracks under its module.
+    config = _write_config(tmp_path)
+    pdf = _module_pdf(tmp_path, "MG2001")
+
+    service.run_one(pdf, config)  # no module given: inferred from the path
+    assert (tmp_path / "outbox" / "MG2001" / "a.pdf").is_file()
+    assert not (tmp_path / "outbox" / "a.pdf").exists()
+    assert service.list_pending(config) == []  # the UI sees it as done, once
+
+    _module_pdf(tmp_path, "MG2001", "b.pdf")
+    service.run_batch(tmp_path / "inbox" / "MG2001", config)  # explicit folder
+    assert (tmp_path / "outbox" / "MG2001" / "b.pdf").is_file()
+    assert not (tmp_path / "outbox" / "b.pdf").exists()
+
+
+def test_undo_history_is_isolated_per_module(tmp_path):
+    config = _write_config(tmp_path)
+    _module_pdf(tmp_path, "MG2001")
+    service.run_batch(None, config, module="MG2001")
+    undo = tmp_path / "sidecars" / "MG2001" / ".undo"
+    undo.mkdir(parents=True)
+    (undo / "a.pdf.1.bak").write_bytes(PDF_BYTES)
+
+    assert service.undo_depth("MG2001/a.pdf", config) == 1
+    assert service.undo_depth("a.pdf", config) == 0  # the flat root knows nothing of it
 
 
 def test_find_output_checks_the_status_folders(tmp_path):

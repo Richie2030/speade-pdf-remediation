@@ -61,6 +61,18 @@ before pilot · **[edge]** = corner case, note if it fails.
   *original* one (never re-tagged), but the file is *not* byte-identical: the
   finish stamps Tabs/Lang/DisplayDocTitle/pdfuaid on top; it goes straight to
   the gate.
+- [ ] **[core]** With the module box EMPTY → Add PDFs and Process PDFs are
+  greyed out; every module shows as a collapsed one-line header with counts.
+  Type a module code (lowercase auto-uppercases) → that module pins to the top,
+  expanded; Process reads "Process N PDFs (CODE)".
+- [ ] **[core]** Process with module A typed while module B has waiting PDFs →
+  ONLY module A's files process; outputs land in `outbox\A\`; module B still
+  says "waiting". Same-named PDFs in two modules stay two separate documents.
+- [ ] **[core]** Approve a document → it leaves the review list and appears
+  under its module's collapsed "Done (N)" (click to open); on disk it moved to
+  that module's `approved\` subfolder. Newest processed documents list first.
+- [ ] **[imp]** History and the CSV export show the module for module documents
+  (e.g. "MG2001 / week1.pdf" in-app, a `module` column in the export).
 - [ ] **[core]** Open a document with images → an "Image descriptions…" button
   appears top right (with a count of missing ones). It opens the *Set alternate
   text* stepper: "Image 1 of N", the page scrolls to each image, ◀ ▶ move

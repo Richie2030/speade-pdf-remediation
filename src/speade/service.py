@@ -15,13 +15,14 @@ which is exactly what the JS bridge will need.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sys
 import time
 from collections.abc import Callable
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -42,6 +43,48 @@ from speade.validation.structure import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+
+# ---------------------------------------------------------------- module codes
+# Each module gets its own folder inside inbox/outbox/sidecars, so Student
+# Partners work per-module and same-named PDFs from different modules can never
+# collide. A document's identity everywhere outside this file is its REL-ID:
+# "MG2001/notes.pdf" (module document) or "notes.pdf" (legacy flat root).
+
+_RESERVED_DIRS = {"approved", "rejected"}
+# folder-name-safe, no dots (rules out "..", hidden dirs, and name confusion
+# with *.pdf files); 32 chars is far beyond any real module code.
+_MODULE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _-]{0,31}")
+
+
+def normalize_module(code: str) -> str:
+    """Validate a typed module code -> the folder name used for it.
+    Raises ValueError for anything that is not a safe single folder name."""
+    code = str(code).strip()
+    if not _MODULE_RE.fullmatch(code) or code.lower() in _RESERVED_DIRS:
+        raise ValueError(f"not a valid module code: {code!r}")
+    return code
+
+
+def split_id(file: str) -> tuple[str | None, str]:
+    """A rel-id -> (module | None, filename). The ONLY parser of client-supplied
+    document ids: one optional validated module folder plus a bare filename,
+    so no id can ever reach outside the workspace tree."""
+    parts = PurePosixPath(str(file).replace("\\", "/")).parts
+    if not parts:
+        raise ValueError("empty document id")
+    name = Path(parts[-1]).name
+    if not name:
+        raise ValueError(f"not a document id: {file!r}")
+    if len(parts) == 1:
+        return None, name
+    if len(parts) == 2:
+        return normalize_module(parts[0]), name
+    raise ValueError(f"not a document id: {file!r}")
+
+
+def make_id(module: str | None, name: str) -> str:
+    """(module, filename) -> the rel-id clients hold."""
+    return f"{module}/{name}" if module else name
 
 
 class Workspace(BaseModel):
@@ -69,7 +112,12 @@ class BatchItem(BaseModel):
 class QueueItem(BaseModel):
     """One outbox draft, summarised for a review-queue listing."""
 
-    file: str  # pdf filename in the outbox
+    file: str  # the rel-id ("MG2001/notes.pdf", or "notes.pdf" for the flat root)
+    module: str | None = None  # module folder, None for the legacy flat root
+    name: str = ""  # bare filename, what the UI displays
+    # when this document's record last changed (sidecar mtime): processing,
+    # an edit, or a decision -- the queue sorts newest-first on it.
+    updated_at: float = 0.0
     route: str
     stages_applied: list[str] = Field(default_factory=list)
     flags: list[str] = Field(default_factory=list)
@@ -144,56 +192,133 @@ def stage_mapping(config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, str]:
     return workspace(config_path).stages
 
 
-def _find_output(ws: Workspace, name: str) -> Path | None:
-    """Locate an output PDF by bare filename: outbox root first (a fresh draft
-    shadows any older decided copy), then the approved/ and rejected/ subfolders."""
-    for folder in (ws.outbox, ws.outbox / "approved", ws.outbox / "rejected"):
+def _module_base(ws: Workspace, module: str | None) -> Path:
+    """The outbox subtree a module's documents live in (the root when None)."""
+    return ws.outbox / module if module else ws.outbox
+
+
+def _side_dir(ws: Workspace, module: str | None) -> Path:
+    """Where a module's sidecar records live (the flat dir when None)."""
+    return ws.sidecars / module if module else ws.sidecars
+
+
+def _side_path(ws: Workspace, module: str | None, name: str) -> Path:
+    return _side_dir(ws, module) / (name + ".sidecar.json")
+
+
+def _module_of(ws: Workspace, pdf: Path) -> str | None:
+    """Which module folder an inbox/outbox path belongs to (None = flat root,
+    or a path outside the workspace, e.g. a CLI run on an arbitrary file)."""
+    resolved = pdf.resolve()
+    for root in (ws.outbox.resolve(), ws.inbox.resolve()):
+        try:
+            parts = resolved.relative_to(root).parts
+        except ValueError:
+            continue
+        if len(parts) >= 2 and parts[0] not in _RESERVED_DIRS:
+            try:
+                return normalize_module(parts[0])
+            except ValueError:  # a hand-made folder no module code could name
+                return None
+        return None
+    return None
+
+
+def list_modules(config_path: Path = DEFAULT_CONFIG_PATH) -> list[str]:
+    """Every module folder that exists in the workspace (inbox or outbox) --
+    the suggestion list behind the UI's module-code box."""
+    ws = workspace(config_path)
+    found: set[str] = set()
+    for base in (ws.inbox, ws.outbox, ws.sidecars):
+        for child in base.iterdir() if base.is_dir() else ():
+            if child.is_dir() and child.name not in _RESERVED_DIRS:
+                with suppress(ValueError):
+                    found.add(normalize_module(child.name))
+    return sorted(found)
+
+
+def _find_output(ws: Workspace, module: str | None, name: str) -> Path | None:
+    """Locate an output PDF within its module tree: module root first (a fresh
+    draft shadows any older decided copy), then approved/ and rejected/."""
+    base = _module_base(ws, module)
+    for folder in (base, base / "approved", base / "rejected"):
         candidate = folder / name
         if candidate.is_file():
             return candidate
     return None
 
 
-def find_output(name: str, config_path: Path = DEFAULT_CONFIG_PATH) -> Path | None:
-    """Public wrapper for clients that hold only a filename (the bridge, the web
+def find_output(file: str, config_path: Path = DEFAULT_CONFIG_PATH) -> Path | None:
+    """Public wrapper for clients that hold only a rel-id (the bridge, the web
     app): where in the outbox tree does this document currently live?"""
-    return _find_output(workspace(config_path), Path(name).name)
+    module, name = split_id(file)
+    return _find_output(workspace(config_path), module, name)
 
 
-def _score_draft(ws: Workspace, sidecar: Sidecar) -> Sidecar:
+def sidecar_path_for(pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> Path:
+    """The sidecar record path for an output PDF (module-aware) -- for clients
+    that report where the record lives (the CLI's verify echo)."""
+    ws = workspace(config_path)
+    return _side_path(ws, _module_of(ws, pdf), pdf.name)
+
+
+def _score_draft(ws: Workspace, sidecar: Sidecar, module: str | None = None) -> Sidecar:
     """Run the veraPDF gate on a freshly written draft and persist the verdict,
     so the review queue shows machine feedback IMMEDIATELY after processing --
     the reviewer must not need Acrobat just to learn whether tagging worked.
     Advisory only: decide() re-runs veraPDF at sign-off on the bytes being
     approved, which stays the authoritative check."""
-    out_pdf = ws.outbox / Path(sidecar.source_path).name
+    name = Path(sidecar.source_path).name
+    out_pdf = _module_base(ws, module) / name
     vera = verapdf.validate(out_pdf, ws.verapdf_profile, cli=ws.verapdf_cli)
     sidecar.verapdf_passed = vera.passed
     sidecar.verapdf_failed_clauses = vera.failed_clauses
-    side_path = ws.sidecars / (out_pdf.name + ".sidecar.json")
-    side_path.write_text(sidecar.model_dump_json(), encoding="utf-8")
+    _side_path(ws, module, name).write_text(sidecar.model_dump_json(), encoding="utf-8")
     return sidecar
 
 
-def run_one(pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> Sidecar:
-    """Run one PDF through the configured pipeline into the outbox, then score
-    the draft with veraPDF (advisory; see _score_draft).
+def _run_dirs(ws: Workspace, module: str | None) -> tuple[Path, Path]:
+    """(outbox dir, sidecar dir) a run for `module` writes into, created."""
+    out_dir, side_dir = _module_base(ws, module), _side_dir(ws, module)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    side_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir, side_dir
+
+
+def run_one(
+    pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH, module: str | None = None
+) -> Sidecar:
+    """Run one PDF through the configured pipeline into the outbox (the given
+    module's folder, or the flat root), then score the draft with veraPDF
+    (advisory; see _score_draft).
 
     Raises KeyError for an unknown stage implementation and lets pipeline
     failures propagate -- single-file callers want the real error.
     """
     ws = workspace(config_path)
     stages = [registry.get_stage(impl) for impl in ws.stages.values()]
-    sidecar = runner.run(pdf, stages, ws.outbox, ws.audit_log, sidecar_dir=ws.sidecars)
-    return _score_draft(ws, sidecar)
+    if module is None:
+        # CLI parity: `speade run inbox/MG2001/x.pdf` must land in MG2001's
+        # outbox, not fork a second flat-root identity for the same document.
+        module = _module_of(ws, pdf)
+    out_dir, side_dir = _run_dirs(ws, module)
+    sidecar = runner.run(
+        pdf,
+        stages,
+        out_dir,
+        ws.audit_log,
+        sidecar_dir=side_dir,
+        audit_extra={"module": module} if module else None,
+    )
+    return _score_draft(ws, sidecar, module)
 
 
-def _needs_processing(ws: Workspace, pdf: Path) -> bool:
+def _needs_processing(ws: Workspace, pdf: Path, module: str | None = None) -> bool:
     """Does this inbox file still need a run? False only when a sidecar exists
     whose recorded source fingerprint matches the file's current bytes AND its
     output still exists somewhere in the outbox tree -- i.e. this exact document
     was already processed. A replaced/edited source (new hash) processes again."""
-    side_path = ws.sidecars / (pdf.name + ".sidecar.json")
+    side_path = _side_path(ws, module, pdf.name)
     if not side_path.is_file():
         return True
     try:
@@ -202,15 +327,32 @@ def _needs_processing(ws: Workspace, pdf: Path) -> bool:
         return True
     if sidecar.source_sha256 != sha256_file(pdf):
         return True
-    return _find_output(ws, pdf.name) is None
+    return _find_output(ws, module, pdf.name) is None
+
+
+def _inbox_sweep(ws: Workspace, module: str | None) -> list[tuple[Path, str | None]]:
+    """(pdf, module) pairs a batch would consider: one module's folder when
+    given, otherwise the flat root plus EVERY module folder (CLI parity)."""
+    if module is not None:
+        folder = ws.inbox / module
+        return [(p, module) for p in sorted(folder.glob("*.pdf")) if p.is_file()]
+    pairs = [(p, None) for p in sorted(ws.inbox.glob("*.pdf")) if p.is_file()]
+    for child in sorted(ws.inbox.iterdir()):
+        if child.is_dir() and child.name not in _RESERVED_DIRS:
+            with suppress(ValueError):
+                code = normalize_module(child.name)
+                pairs += [(p, code) for p in sorted(child.glob("*.pdf")) if p.is_file()]
+    return pairs
 
 
 def list_pending(config_path: Path = DEFAULT_CONFIG_PATH) -> list[str]:
     """Inbox files still waiting to be processed (the sidebar's 'Waiting to
-    process' section): everything in the inbox minus already-done documents."""
+    process' entries), as rel-ids across the flat root and every module."""
     ws = workspace(config_path)
     return [
-        p.name for p in sorted(ws.inbox.glob("*.pdf")) if p.is_file() and _needs_processing(ws, p)
+        make_id(module, pdf.name)
+        for pdf, module in _inbox_sweep(ws, None)
+        if _needs_processing(ws, pdf, module)
     ]
 
 
@@ -220,6 +362,7 @@ def run_batch(
     progress: Callable[[int, int, str], None] | None = None,
     cancel: Callable[[], bool] | None = None,
     reprocess: bool = False,
+    module: str | None = None,
 ) -> list[BatchItem]:
     """Sweep every *.pdf in `folder` (default: the configured inbox) through the
     pipeline, scoring each draft with veraPDF (see _score_draft). Per-file
@@ -237,29 +380,54 @@ def run_batch(
 
     `cancel`, when given, is polled BETWEEN documents (the Stop button): the
     file in flight always finishes, so nothing is left half-written, and the
-    items processed so far are returned as normal."""
+    items processed so far are returned as normal.
+
+    `module`, when given, restricts the sweep to that module's inbox folder --
+    the "students only process their own module's batch" rule. Without it (and
+    without an explicit `folder`) the flat root AND every module folder are
+    swept, each document landing in its own module's outbox."""
     ws = workspace(config_path)
-    src_dir = Path(folder) if folder is not None else ws.inbox
     stages = [registry.get_stage(impl) for impl in ws.stages.values()]  # fail fast on config
 
-    pdfs = sorted(p for p in src_dir.glob("*.pdf") if p.is_file())
-    todo = [p for p in pdfs if reprocess or _needs_processing(ws, p)]
+    if folder is not None:
+        # an explicit folder is a CLI affair. Pointing it AT a module's inbox
+        # folder must not fork those documents into the flat root -- infer the
+        # module from the folder's place in the workspace (None if outside).
+        folder_module = _module_of(ws, Path(folder) / "_probe.pdf")
+        pairs = [(p, folder_module) for p in sorted(Path(folder).glob("*.pdf")) if p.is_file()]
+    else:
+        pairs = _inbox_sweep(ws, normalize_module(module) if module else None)
+    todo = [(p, m) for p, m in pairs if reprocess or _needs_processing(ws, p, m)]
     items: list[BatchItem] = [
-        BatchItem(file=p.name, ok=True, skipped=True) for p in pdfs if p not in todo
+        BatchItem(file=make_id(m, p.name), ok=True, skipped=True)
+        for p, m in pairs
+        if (p, m) not in todo
     ]
     done = 0
-    for pdf in todo:
+    for pdf, mod in todo:
         if cancel is not None and cancel():
             break
         if progress is not None:
-            progress(done, len(todo), pdf.name)
+            progress(done, len(todo), make_id(mod, pdf.name))
         try:
-            sidecar = runner.run(pdf, stages, ws.outbox, ws.audit_log, sidecar_dir=ws.sidecars)
-            sidecar = _score_draft(ws, sidecar)
-            items.append(BatchItem(file=pdf.name, ok=True, sidecar=sidecar))
+            out_dir, side_dir = _run_dirs(ws, mod)
+            sidecar = runner.run(
+                pdf,
+                stages,
+                out_dir,
+                ws.audit_log,
+                sidecar_dir=side_dir,
+                audit_extra={"module": mod} if mod else None,
+            )
+            sidecar = _score_draft(ws, sidecar, mod)
+            items.append(BatchItem(file=make_id(mod, pdf.name), ok=True, sidecar=sidecar))
         except Exception as exc:  # per-file isolation: record, continue the sweep
             items.append(
-                BatchItem(file=pdf.name, ok=False, error=f"{type(exc).__name__}: {str(exc)[:200]}")
+                BatchItem(
+                    file=make_id(mod, pdf.name),
+                    ok=False,
+                    error=f"{type(exc).__name__}: {str(exc)[:200]}",
+                )
             )
         done += 1
     if progress is not None:
@@ -268,37 +436,59 @@ def run_batch(
 
 
 def list_queue(config_path: Path = DEFAULT_CONFIG_PATH) -> list[QueueItem]:
-    """Summarise every outbox draft (its sidecar) for a review-queue listing."""
+    """Summarise every outbox draft (its sidecar) for a review-queue listing,
+    across the flat root and every module folder."""
     ws = workspace(config_path)
+    modules: list[str | None] = [None]
+    if ws.sidecars.is_dir():
+        for child in sorted(ws.sidecars.iterdir()):
+            if child.is_dir() and not child.name.startswith("."):
+                with suppress(ValueError):
+                    modules.append(normalize_module(child.name))
     items: list[QueueItem] = []
-    for side_path in sorted(ws.sidecars.glob("*.pdf.sidecar.json")):
-        pdf_name = side_path.name.removesuffix(".sidecar.json")
-        try:
-            sidecar = Sidecar.model_validate_json(side_path.read_text(encoding="utf-8"))
-        except Exception:  # a mangled sidecar must not hide the rest of the queue
-            items.append(QueueItem(file=pdf_name, route="unknown", status="invalid-sidecar"))
-            continue
-        # compare the bytes on disk with the recorded fingerprint, so the UI can
-        # say "edited since processing" (e.g. an Acrobat fix) in plain language.
-        out_pdf = _find_output(ws, pdf_name)
-        changed: bool | None = None
-        if out_pdf is not None and sidecar.output_sha256:
-            changed = sha256_file(out_pdf) != sidecar.output_sha256
-        items.append(
-            QueueItem(
-                file=pdf_name,
-                route=sidecar.route.value,
-                stages_applied=sidecar.stages_applied,
-                flags=sidecar.flags,
-                verapdf_passed=sidecar.verapdf_passed,
-                verapdf_failed_clauses=sidecar.verapdf_failed_clauses,
-                status=sidecar.approval.status.value,
-                reviewer=sidecar.approval.reviewer,
-                output_changed=changed,
-                ocr_layered=sidecar.ocr_layered,
-                undo_depth=len(_undo_snapshots(ws, pdf_name)),
+    for module in modules:
+        for side_path in sorted(_side_dir(ws, module).glob("*.pdf.sidecar.json")):
+            pdf_name = side_path.name.removesuffix(".sidecar.json")
+            rel_id = make_id(module, pdf_name)
+            updated_at = side_path.stat().st_mtime
+            try:
+                sidecar = Sidecar.model_validate_json(side_path.read_text(encoding="utf-8"))
+            except Exception:  # a mangled sidecar must not hide the rest of the queue
+                items.append(
+                    QueueItem(
+                        file=rel_id,
+                        module=module,
+                        name=pdf_name,
+                        updated_at=updated_at,
+                        route="unknown",
+                        status="invalid-sidecar",
+                    )
+                )
+                continue
+            # compare the bytes on disk with the recorded fingerprint, so the UI
+            # can say "edited since processing" (an Acrobat fix) in plain language.
+            out_pdf = _find_output(ws, module, pdf_name)
+            changed: bool | None = None
+            if out_pdf is not None and sidecar.output_sha256:
+                changed = sha256_file(out_pdf) != sidecar.output_sha256
+            items.append(
+                QueueItem(
+                    file=rel_id,
+                    module=module,
+                    name=pdf_name,
+                    updated_at=updated_at,
+                    route=sidecar.route.value,
+                    stages_applied=sidecar.stages_applied,
+                    flags=sidecar.flags,
+                    verapdf_passed=sidecar.verapdf_passed,
+                    verapdf_failed_clauses=sidecar.verapdf_failed_clauses,
+                    status=sidecar.approval.status.value,
+                    reviewer=sidecar.approval.reviewer,
+                    output_changed=changed,
+                    ocr_layered=sidecar.ocr_layered,
+                    undo_depth=len(_undo_snapshots(ws, module, pdf_name)),
+                )
             )
-        )
     return items
 
 
@@ -347,7 +537,8 @@ def set_doc_metadata(
     tmp.replace(pdf)
 
     new_sha = sha256_file(pdf)
-    side_path = ws.sidecars / (pdf.name + ".sidecar.json")
+    module = _module_of(ws, pdf)
+    side_path = _side_path(ws, module, pdf.name)
     if side_path.is_file():
         try:
             sidecar = Sidecar.model_validate_json(side_path.read_text(encoding="utf-8"))
@@ -362,6 +553,7 @@ def set_doc_metadata(
             "event": "edit-metadata",
             "ts": datetime.now(UTC).isoformat(timespec="seconds"),
             "file": pdf.name,
+            **({"module": module} if module else {}),
             "title": title or None,
             "lang": lang or None,
             "output_sha256": new_sha,
@@ -415,33 +607,36 @@ EDITABLE_TAG_TYPES = (
 _UNDO_DEPTH = 20
 
 
-def _undo_dir(ws: Workspace) -> Path:
+def _undo_dir(ws: Workspace, module: str | None) -> Path:
     """Where per-document edit snapshots live (inside the hidden sidecar area,
-    so reviewers browsing data/ are not tempted to poke at them)."""
-    return ws.sidecars / ".undo"
+    so reviewers browsing data/ are not tempted to poke at them). Per module,
+    so two modules' same-named documents keep separate histories."""
+    return _side_dir(ws, module) / ".undo"
 
 
-def _undo_snapshots(ws: Workspace, name: str) -> list[Path]:
+def _undo_snapshots(ws: Workspace, module: str | None, name: str) -> list[Path]:
     """This document's snapshots, oldest first."""
-    folder = _undo_dir(ws)
+    folder = _undo_dir(ws, module)
     if not folder.is_dir():
         return []
     return sorted(folder.glob(f"{name}.*.bak"), key=lambda p: int(p.suffixes[-2].lstrip(".")))
 
 
-def undo_depth(name: str, config_path: Path = DEFAULT_CONFIG_PATH) -> int:
-    """How many single-step undos are available for this document."""
-    return len(_undo_snapshots(workspace(config_path), Path(name).name))
+def undo_depth(file: str, config_path: Path = DEFAULT_CONFIG_PATH) -> int:
+    """How many single-step undos are available for this document (rel-id)."""
+    module, name = split_id(file)
+    return len(_undo_snapshots(workspace(config_path), module, name))
 
 
 def _snapshot(ws: Workspace, pdf: Path) -> Path | None:
     """Copy the document aside so the edit about to happen can be undone one
     step. Returns the snapshot path, or None if it could not be written --
     failure to snapshot must not block the edit itself."""
-    folder = _undo_dir(ws)
+    module = _module_of(ws, pdf)
+    folder = _undo_dir(ws, module)
     try:
         folder.mkdir(parents=True, exist_ok=True)
-        existing = _undo_snapshots(ws, pdf.name)
+        existing = _undo_snapshots(ws, module, pdf.name)
         for stale in existing[: max(0, len(existing) + 1 - _UNDO_DEPTH)]:
             stale.unlink(missing_ok=True)
         nxt = 1 + max((int(p.suffixes[-2].lstrip(".")) for p in existing), default=0)
@@ -466,10 +661,10 @@ def _edit_guard(ws: Workspace, pdf: Path):
         raise
 
 
-def clear_undo(ws: Workspace, name: str) -> None:
+def clear_undo(ws: Workspace, module: str | None, name: str) -> None:
     """Drop a document's snapshots -- after a reprocess or a decision the older
     versions are no longer meaningful history to step back through."""
-    for snapshot in _undo_snapshots(ws, Path(name).name):
+    for snapshot in _undo_snapshots(ws, module, Path(name).name):
         with suppress(OSError):
             snapshot.unlink(missing_ok=True)
 
@@ -478,7 +673,8 @@ def undo_last_edit(pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> dict[s
     """Restore the document to the state before the most recent edit (one step).
     Raises LookupError when there is nothing left to undo."""
     ws = workspace(config_path)
-    snapshots = _undo_snapshots(ws, pdf.name)
+    module = _module_of(ws, pdf)
+    snapshots = _undo_snapshots(ws, module, pdf.name)
     if not snapshots:
         raise LookupError("nothing to undo for this document")
     latest = snapshots[-1]
@@ -488,7 +684,7 @@ def undo_last_edit(pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> dict[s
     with suppress(OSError):
         latest.unlink(missing_ok=True)
     result = _after_edit(ws, pdf, {"event": "edit-undo"})
-    result["undo_depth"] = len(_undo_snapshots(ws, pdf.name))
+    result["undo_depth"] = len(_undo_snapshots(ws, module, pdf.name))
     return result
 
 
@@ -498,7 +694,8 @@ def _after_edit(ws: Workspace, pdf: Path, event: dict[str, Any]) -> dict[str, An
     edit in the audit trail. `output_sha256` is deliberately NOT updated -- the
     document now differs from what the pipeline produced ("edited since
     processing"), and the approval step is what re-pins the shipped bytes."""
-    side_path = ws.sidecars / (pdf.name + ".sidecar.json")
+    module = _module_of(ws, pdf)
+    side_path = _side_path(ws, module, pdf.name)
     vera = verapdf.validate(pdf, ws.verapdf_profile, cli=ws.verapdf_cli)
     if side_path.is_file():
         sidecar = Sidecar.model_validate_json(side_path.read_text(encoding="utf-8"))
@@ -510,6 +707,7 @@ def _after_edit(ws: Workspace, pdf: Path, event: dict[str, Any]) -> dict[str, An
         {
             "ts": datetime.now(UTC).isoformat(timespec="seconds"),
             "file": pdf.name,
+            **({"module": module} if module else {}),
             **event,
         },
     )
@@ -597,7 +795,7 @@ def move_tag(
         result = structure.move_element(pdf, node_id, delta)
     if not result["moved"]:
         # nothing changed: drop the snapshot so "undo" never becomes a no-op
-        snapshots = _undo_snapshots(ws, pdf.name)
+        snapshots = _undo_snapshots(ws, _module_of(ws, pdf), pdf.name)
         if snapshots:
             with suppress(OSError):
                 snapshots[-1].unlink(missing_ok=True)
@@ -730,22 +928,33 @@ def unwrap_tag(pdf: Path, node_id: int, config_path: Path = DEFAULT_CONFIG_PATH)
     )
 
 
-def reprocess(name: str, config_path: Path = DEFAULT_CONFIG_PATH) -> Sidecar:
+def reprocess(file: str, config_path: Path = DEFAULT_CONFIG_PATH) -> Sidecar:
     """Discard in-app/Acrobat edits by running the ORIGINAL inbox document
     through the pipeline again -- the undo for the whole editing session.
-    Raises FileNotFoundError when the source is no longer in the inbox."""
+    Takes a rel-id; raises FileNotFoundError when the source is no longer in
+    its inbox folder."""
     ws = workspace(config_path)
-    src = ws.inbox / Path(name).name
+    module, name = split_id(file)
+    src = (ws.inbox / module if module else ws.inbox) / name
     if not src.is_file():
         raise FileNotFoundError(f"original not in the inbox: {src.name}")
     # a decided copy would otherwise shadow the fresh draft in find_output()
-    for folder in (ws.outbox / "approved", ws.outbox / "rejected"):
+    base = _module_base(ws, module)
+    for folder in (base / "approved", base / "rejected"):
         with suppress(OSError):
             (folder / src.name).unlink(missing_ok=True)
-    clear_undo(ws, src.name)  # the old step-by-step history no longer applies
+    clear_undo(ws, module, src.name)  # the old step-by-step history no longer applies
     stages = [registry.get_stage(impl) for impl in ws.stages.values()]
-    sidecar = runner.run(src, stages, ws.outbox, ws.audit_log, sidecar_dir=ws.sidecars)
-    return _score_draft(ws, sidecar)
+    out_dir, side_dir = _run_dirs(ws, module)
+    sidecar = runner.run(
+        src,
+        stages,
+        out_dir,
+        ws.audit_log,
+        sidecar_dir=side_dir,
+        audit_extra={"module": module} if module else None,
+    )
+    return _score_draft(ws, sidecar, module)
 
 
 def audit_events(config_path: Path = DEFAULT_CONFIG_PATH, limit: int = 200) -> list[dict[str, Any]]:
@@ -761,6 +970,7 @@ def audit_events(config_path: Path = DEFAULT_CONFIG_PATH, limit: int = 200) -> l
 _EXPORT_COLUMNS = (
     "time",
     "event",
+    "module",
     "document",
     "reviewer",
     "decision",
@@ -831,7 +1041,8 @@ def decide(
         # a decision needs bytes to pin -- fail clearly instead of recording a
         # verdict about a document that is not there.
         raise FileNotFoundError(f"PDF not found: {pdf}")
-    side_path = ws.sidecars / (pdf.name + ".sidecar.json")
+    module = _module_of(ws, pdf)
+    side_path = _side_path(ws, module, pdf.name)
     if not side_path.is_file():
         raise FileNotFoundError(f"sidecar not found for this PDF: {side_path}")
     sidecar = Sidecar.model_validate_json(side_path.read_text(encoding="utf-8"))
@@ -846,14 +1057,14 @@ def decide(
     sidecar.verapdf_failed_clauses = vera.failed_clauses
 
     status = ApprovalStatus.APPROVED if approve else ApprovalStatus.REJECTED
-    clear_undo(ws, pdf.name)  # the decision closes this editing session
+    clear_undo(ws, module, pdf.name)  # the decision closes this editing session
     sidecar.approval = Approval(status=status, reviewer=reviewer, decided_at=datetime.now(UTC))
 
     # sort the decided document into its status subfolder FIRST, so the audit
-    # line can record where the bytes actually ended up: the outbox itself
-    # reads as a workflow (root = awaiting review, approved/ = ready to ship,
-    # rejected/ = needs manual rework). Only files inside the outbox tree move --
-    # a decision on a PDF elsewhere (CLI with an odd path) records but stays put.
+    # line can record where the bytes actually ended up: each module's outbox
+    # folder reads as a workflow (root = awaiting review, approved/ = ready to
+    # ship, rejected/ = needs manual rework). Only files inside the outbox tree
+    # move -- a decision on a PDF elsewhere (CLI, odd path) records but stays put.
     # A move the retries cannot land (the draft open in Acrobat, a render mid-
     # flight) does NOT void the decision: it is recorded, the file stays put,
     # and a sidecar flag tells the reviewer/admin to move it.
@@ -863,13 +1074,14 @@ def decide(
     # a successful re-decide (Acrobat closed) does not read as still stuck.
     if "decide-move-failed-file-in-use" in sidecar.flags:
         sidecar.flags.remove("decide-move-failed-file-in-use")
-    dest_dir = ws.outbox / ("approved" if approve else "rejected")
-    outbox_tree = (ws.outbox, ws.outbox / "approved", ws.outbox / "rejected")
+    base = _module_base(ws, module)
+    dest_dir = base / ("approved" if approve else "rejected")
+    outbox_tree = (base, base / "approved", base / "rejected")
     if pdf.resolve().parent in outbox_tree and pdf.resolve().parent != dest_dir:
         dest_dir.mkdir(parents=True, exist_ok=True)
         try:
             _replace_with_retry(pdf.resolve(), dest_dir / pdf.name)
-            moved_to = f"outbox/{dest_dir.name}"
+            moved_to = f"outbox/{module}/{dest_dir.name}" if module else f"outbox/{dest_dir.name}"
         except PermissionError:
             move_failed = True
             sidecar.flags.append("decide-move-failed-file-in-use")
@@ -885,6 +1097,7 @@ def decide(
             "event": "verify",
             "ts": datetime.now(UTC).isoformat(timespec="seconds"),
             "file": pdf.name,
+            **({"module": module} if module else {}),
             "reviewer": reviewer,
             "decision": status.value,
             "verapdf_passed": vera.passed,

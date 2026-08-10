@@ -128,8 +128,7 @@ def verify(
     clauses = ", ".join(sidecar.verapdf_failed_clauses) or "no failures"
     typer.echo(f"veraPDF ({profile}): {verdict} ({clauses})")
     typer.echo(f"Decision: {sidecar.approval.status.value} by {reviewer}")
-    sidecar_path = service.workspace(config).sidecars / (pdf.name + ".sidecar.json")
-    typer.echo(f"Sidecar updated: {sidecar_path}")
+    typer.echo(f"Sidecar updated: {service.sidecar_path_for(pdf, config)}")
 
 
 def main() -> None:

@@ -116,6 +116,48 @@ def test_upload_process_decide_round_trip(tmp_path):
     assert client.get("/api/pdf", params={"file": "a.pdf"}).status_code == 200
 
 
+def test_module_upload_process_decide_round_trip(tmp_path):
+    # the same flow scoped to a module: upload lands in the module's inbox,
+    # the batch start takes the module, and the rel-id works everywhere.
+    client = _client(tmp_path)
+
+    up = client.post(
+        "/api/upload",
+        data={"module": "MG2001"},
+        files=[("files", ("a.pdf", PDF_BYTES, "application/pdf"))],
+    )
+    assert up.json() == {"copied": ["MG2001/a.pdf"]}
+    assert (tmp_path / "inbox" / "MG2001" / "a.pdf").read_bytes() == PDF_BYTES
+    assert client.get("/api/modules").json() == {"modules": ["MG2001"]}
+
+    start = client.post("/api/run_batch_start", json={"module": "MG2001"})
+    assert start.json() == {"started": True}
+    for _ in range(500):
+        status = client.get("/api/run_batch_status").json()
+        if not status.get("running"):
+            break
+        time.sleep(0.02)
+    assert status["running"] is False
+
+    queue = client.get("/api/list_queue").json()
+    assert [(q["file"], q["module"]) for q in queue] == [("MG2001/a.pdf", "MG2001")]
+    assert client.get("/api/pdf", params={"file": "MG2001/a.pdf"}).status_code == 200
+
+    decided = client.post(
+        "/api/decide", json={"file": "MG2001/a.pdf", "reviewer": "s1", "approve": True}
+    )
+    assert decided.json()["status"] == "approved"
+    assert (tmp_path / "outbox" / "MG2001" / "approved" / "a.pdf").is_file()
+
+
+def test_pdf_endpoint_maps_malformed_ids_to_404_not_500(tmp_path):
+    # review-caught regression: find_output now RAISES on malformed rel-ids,
+    # and this raw endpoint bypassed the bridge's ValueError -> not-found path.
+    client = _client(tmp_path)
+    for bad in ("a/b/c.pdf", "approved/x.pdf", "../x.pdf"):
+        assert client.get("/api/pdf", params={"file": bad}).status_code == 404
+
+
 def test_upload_strips_paths_and_non_pdfs(tmp_path):
     client = _client(tmp_path)
 

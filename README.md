@@ -14,19 +14,26 @@ release.
 ## What it does
 
 ```
-data/inbox → detect (born-digital vs scanned) → [OCR if scanned]
-  → tag (structure + PDF/UA tagging) → draft in data/outbox   (awaiting review)
-  → human + veraPDF gate → data/outbox/approved/   (ready to share)
-                         → data/outbox/rejected/   (needs manual rework)
+data/inbox/<MODULE>/ → detect (born-digital vs scanned) → [OCR if scanned]
+  → tag (structure + PDF/UA tagging) → draft in data/outbox/<MODULE>/  (awaiting review)
+  → human + veraPDF gate → data/outbox/<MODULE>/approved/   (ready to share)
+                         → data/outbox/<MODULE>/rejected/   (needs manual rework)
 ```
+
+Documents are organised **per module**: each module code (e.g. `MG2001`) gets
+its own folder inside the inbox, outbox, and sidecars, and the review UI's
+module box scopes Add/Process to one module at a time. PDFs directly in the
+inbox/outbox root still work as a legacy "(no module)" group. Any inbox
+subfolder with a folder-safe name is treated as a module.
 
 Each stage takes a PDF and its sidecar JSON and returns an updated PDF and
 sidecar. Stages are picked by name in `config.yaml`, so swapping a tool is a
 config edit rather than a code change. The input PDF is never touched; work
-happens on a copy. Sidecars live in `data/sidecars/` since they're internal
-records and the outbox is kept for deliverables. Every run, metadata edit, and
-gate decision gets appended to an audit log at `data/audit/audit.jsonl`, each
-entry carrying a SHA-256 fingerprint.
+happens on a copy. Sidecars live in `data/sidecars/<MODULE>/` since they're
+internal records and the outbox is kept for deliverables. Every run, metadata
+edit, and gate decision gets appended to ONE audit log at
+`data/audit/audit.jsonl` (each entry carrying the module and a SHA-256
+fingerprint), so the trust trail never fragments across modules.
 
 Some things are fixed by design:
 
@@ -62,7 +69,10 @@ uv sync --all-extras
 
 uv run python -m speade stages             # show the configured pipeline
 uv run python -m speade run FILE.pdf       # remediate one PDF into data/outbox
-uv run python -m speade run-batch          # sweep data/inbox (or run-batch FOLDER)
+                                           #   (a file inside inbox/<MODULE>/ lands
+                                           #    in that module's outbox folder)
+uv run python -m speade run-batch          # sweep the whole inbox, all modules
+                                           #   (or run-batch FOLDER for one folder)
 
 uv run python -m speade.desktop            # the review window
 uv run python -m speade.web                # the review UI at http://127.0.0.1:8765

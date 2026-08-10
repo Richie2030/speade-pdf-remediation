@@ -28,6 +28,7 @@ def run(
     outbox: Path,
     audit_log: Path | None = None,
     sidecar_dir: Path | None = None,
+    audit_extra: dict | None = None,
 ) -> Sidecar:
     """Run `src` through `stages` into `outbox`, never mutating the original.
     Returns the final sidecar, persisted into `sidecar_dir` (default: beside
@@ -106,6 +107,7 @@ def run(
                 "event": "run",
                 "ts": datetime.now(UTC).isoformat(timespec="seconds"),
                 "file": src.name,
+                **(audit_extra or {}),
                 "source_sha256": sidecar.source_sha256,
                 "output_sha256": sidecar.output_sha256,
                 "stages_applied": sidecar.stages_applied,

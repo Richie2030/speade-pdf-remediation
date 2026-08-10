@@ -48,7 +48,8 @@ const api = {
   },
 
   runBatch: () => postJSON("/api/run_batch_start"),
-  runBatchStart: () => postJSON("/api/run_batch_start"),
+  runBatchStart: (module) => postJSON("/api/run_batch_start", { module: module || null }),
+  modules: async () => (await getJSON("/api/modules")).modules,
   runBatchStatus: () => getJSON("/api/run_batch_status"),
   runBatchCancel: () => postJSON("/api/run_batch_cancel"),
   structure: (file) => getJSON("/api/structure?file=" + encodeURIComponent(file)),
@@ -86,12 +87,13 @@ const api = {
   auditLog: (limit) => getJSON("/api/audit_log?limit=" + (limit || 200)),
   decide: (file, reviewer, approve) => postJSON("/api/decide", { file, reviewer, approve }),
   openOutput: (file) => postJSON("/api/open_output", { file }).then((r) => r.ok),
-  openInbox: () => postJSON("/api/open_inbox").then((r) => r.ok),
+  openInbox: (module) =>
+    postJSON("/api/open_inbox", { module: module || null }).then((r) => r.ok),
   openOutbox: () => postJSON("/api/open_outbox").then((r) => r.ok),
 
   // The browser's stand-in for the native file dialog: a hidden picker whose
-  // selection is uploaded multipart into the inbox.
-  addPdfs: () =>
+  // selection is uploaded multipart into the (module's) inbox.
+  addPdfs: (module) =>
     new Promise((resolve) => {
       const input = document.createElement("input");
       input.type = "file";
@@ -100,6 +102,7 @@ const api = {
       input.onchange = async () => {
         if (!input.files.length) return resolve({ copied: [] });
         const form = new FormData();
+        form.append("module", module || "");
         for (const f of input.files) form.append("files", f, f.name);
         const r = await fetch("/api/upload", { method: "POST", body: form });
         resolve(r.ok ? await r.json() : { error: "Upload failed." });

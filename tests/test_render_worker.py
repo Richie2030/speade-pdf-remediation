@@ -33,10 +33,12 @@ def renderer():
 
 
 def test_renders_a_page_to_png_with_geometry(renderer, sample_pdf):
+    import base64
+
     result = renderer.render(sample_pdf, 0)
 
     assert "error" not in result
-    assert result["png"][:8] == b"\x89PNG\r\n\x1a\n"
+    assert base64.b64decode(result["png_b64"])[:8] == b"\x89PNG\r\n\x1a\n"
     assert (result["width"], result["height"]) == (200, 100)
     assert result["pages"] == 2
 
@@ -56,13 +58,13 @@ def test_a_dead_worker_costs_one_request_then_recovers(renderer, sample_pdf):
     assert "error" not in renderer.render(sample_pdf, 0)
 
     renderer._proc.kill()  # stand-in for a native pdfium fault
-    renderer._proc.join(timeout=5)
+    renderer._proc.wait(timeout=5)
 
     # the next call finds the corpse: restart + render succeeds (the request
     # itself never sees a crash because the death happened BETWEEN requests).
     result = renderer.render(sample_pdf, 1)
     assert "error" not in result
-    assert renderer._proc.is_alive()
+    assert renderer._proc.poll() is None  # a fresh worker is alive
 
 
 def test_a_page_that_keeps_killing_the_worker_is_blacklisted(renderer, sample_pdf):
@@ -79,6 +81,20 @@ def test_a_page_that_keeps_killing_the_worker_is_blacklisted(renderer, sample_pd
     assert "crashes the renderer" in result["error"]
     # other pages of the same document still render normally
     assert "error" not in renderer.render(sample_pdf, 1)
+
+
+def test_worker_command_matches_the_delivery(monkeypatch):
+    # normal install: this module run by the current interpreter; the frozen
+    # exe re-invokes ITSELF with --render-worker (speade.desktop.__main__
+    # diverts it). Getting this wrong in the exe would open a second review
+    # window per page render.
+    import sys
+
+    from speade import render_worker as rw
+
+    assert rw._worker_command() == [sys.executable, "-m", "speade.render_worker"]
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert rw._worker_command() == [sys.executable, "--render-worker"]
 
 
 def test_close_is_idempotent_and_safe_without_a_worker(sample_pdf):

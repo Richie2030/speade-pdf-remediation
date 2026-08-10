@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile
+from fastapi import FastAPI, Form, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -33,6 +33,15 @@ class DecideBody(BaseModel):
     file: str
     reviewer: str
     approve: bool
+
+
+class BatchStartBody(BaseModel):
+    module: str | None = None
+    reprocess: bool = False
+
+
+class OpenInboxBody(BaseModel):
+    module: str | None = None
 
 
 class MetadataBody(BaseModel):
@@ -128,9 +137,16 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     def list_pending() -> list[str]:
         return bridge.list_pending()
 
+    @app.get("/api/modules")
+    def modules() -> dict:
+        return {"modules": bridge.modules()}
+
     @app.get("/api/pdf")
     def pdf(file: str):
-        found = service.find_output(file, cfg)
+        try:
+            found = service.find_output(file, cfg)
+        except ValueError:  # malformed rel-id: a clean 404, never a 500
+            found = None
         if found is None:
             return JSONResponse({"error": f"not found: {Path(file).name}"}, status_code=404)
         return FileResponse(found, media_type="application/pdf")
@@ -161,8 +177,9 @@ def create_app(config_path: Path | None = None) -> FastAPI:
 
     # ----------------------------------------------------------- write side
     @app.post("/api/run_batch_start")
-    def run_batch_start() -> dict:
-        return bridge.run_batch_start()
+    def run_batch_start(body: BatchStartBody | None = None) -> dict:
+        body = body or BatchStartBody()
+        return bridge.run_batch_start(reprocess=body.reprocess, module=body.module)
 
     @app.post("/api/run_batch_cancel")
     def run_batch_cancel() -> dict:
@@ -232,17 +249,27 @@ def create_app(config_path: Path | None = None) -> FastAPI:
         return bridge.reprocess(body.file)
 
     @app.post("/api/upload")
-    async def upload(files: list[UploadFile]) -> dict:
+    async def upload(files: list[UploadFile], module: str = Form("")) -> dict:
         """The browser's stand-in for the native Add PDFs dialog: multipart
-        uploads land in the inbox, names stripped of any path components."""
+        uploads land in the inbox (the given module's folder), names stripped
+        of any path components."""
+        code: str | None = None
+        if module.strip():
+            try:
+                code = service.normalize_module(module)
+            except ValueError as exc:
+                return {"error": str(exc)}
         inbox = service.workspace(cfg).inbox
+        if code:
+            inbox = inbox / code
+            inbox.mkdir(parents=True, exist_ok=True)
         copied: list[str] = []
         for item in files:
             name = Path(item.filename or "").name
             if not name.lower().endswith(".pdf"):
                 continue
             (inbox / name).write_bytes(await item.read())
-            copied.append(name)
+            copied.append(service.make_id(code, name))
         return {"copied": copied}
 
     @app.post("/api/open_output")
@@ -250,8 +277,8 @@ def create_app(config_path: Path | None = None) -> FastAPI:
         return {"ok": bridge.open_output(body.file)}
 
     @app.post("/api/open_inbox")
-    def open_inbox() -> dict:
-        return {"ok": bridge.open_inbox()}
+    def open_inbox(body: OpenInboxBody | None = None) -> dict:
+        return {"ok": bridge.open_inbox((body or OpenInboxBody()).module)}
 
     @app.post("/api/open_outbox")
     def open_outbox() -> dict:

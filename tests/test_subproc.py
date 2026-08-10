@@ -61,6 +61,27 @@ def test_run_never_overrides_explicit_creationflags(monkeypatch):
     assert seen["kwargs"]["creationflags"] == 0  # setdefault, not overwrite
 
 
+def test_popen_hides_the_console_window_on_windows_only(monkeypatch):
+    # the long-lived render worker spawns through popen(): same contract as
+    # run(), or the flashing terminal returns with every worker start.
+    seen = {}
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            seen["cmd"] = cmd
+            seen["kwargs"] = kwargs
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+    subproc.popen(["worker"])
+
+    assert seen["cmd"] == ["worker"]
+    if sys.platform == "win32":
+        assert seen["kwargs"]["creationflags"] == subprocess.CREATE_NO_WINDOW
+    else:
+        assert "creationflags" not in seen["kwargs"]
+
+
 def test_every_call_site_uses_the_wrapper():
     # pin the fix itself: a stage/validator reverting to bare subprocess.run
     # would reintroduce the flashing terminal windows with every test green.

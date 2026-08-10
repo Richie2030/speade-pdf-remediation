@@ -117,8 +117,11 @@ flagged `ocr-unavailable` and flow to the human gate — the batch never crashes
 
 ```powershell
 uv run python -m speade stages                    # detect / ocr / tag
-uv run python -m speade run-batch                 # sweep data/inbox -> data/outbox
-uv run python -m speade run some.pdf              # or one file
+uv run python -m speade run-batch                 # sweep the whole inbox, every
+                                                  #   module folder included
+uv run python -m speade run some.pdf              # or one file (a file inside
+                                                  #   inbox\MODULE lands in that
+                                                  #   module's outbox folder)
 uv run python -m speade verify data/outbox/some.pdf --reviewer "you" --approve
 uv run python -m speade.desktop                   # the review window (GUI)
 uv run python -m pytest                            # full suite; corpus tests

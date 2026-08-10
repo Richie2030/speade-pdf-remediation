@@ -5,8 +5,31 @@ const $ = (id) => document.getElementById(id);
 // respect the OS "reduce motion" setting: jump instead of animating scrolls
 const SCROLL = matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
 let queue = [];
-let pending = []; // inbox files still waiting to be processed
+let pending = []; // inbox rel-ids still waiting to be processed
 let selected = null;
+// the Student Partner's module: everything is grouped per module, and Add /
+// Process work only for the module typed here (persisted across restarts).
+let moduleCode = "";
+try {
+  moduleCode = localStorage.getItem("speade-module") || "";
+} catch (e) { /* storage unavailable: the box just starts empty */ }
+const collapsedOverride = new Map(); // module key -> user's explicit open/closed
+const doneOpen = new Set(); // module keys whose "Done" section is expanded
+let knownModules = []; // existing module folders, for case-snapping the box
+let batchRunning = false; // renderQueue must not re-enable Process mid-batch
+
+// filenames are user/browser-supplied and land in innerHTML: escape them.
+function esc(text) {
+  const div = document.createElement("div");
+  div.textContent = String(text);
+  return div.innerHTML;
+}
+
+// "MG2001/notes.pdf" -> ["MG2001", "notes.pdf"]; "notes.pdf" -> [null, ...]
+function splitId(relid) {
+  const at = relid.indexOf("/");
+  return at === -1 ? [null, relid] : [relid.slice(0, at), relid.slice(at + 1)];
+}
 
 // -------- tags view state, rebuilt whenever the selection changes. The tags
 // view IS the document view: tree + continuous page stack with all boxes drawn.
@@ -80,60 +103,173 @@ function veraChip(item) {
 }
 
 // ------------------------------------------------------------------- queue
+// The sidebar is a tree of module groups: the typed module is pinned to the
+// top and expanded, every other module is a collapsed one-line header, and
+// each group's decided documents live in a collapsed "Done" section -- so the
+// list never piles up as partners keep processing.
+
+function queueRow(item) {
+  const div = document.createElement("div");
+  div.className = "qitem" + (selected === item.file ? " selected" : "");
+  div.innerHTML =
+    `<div class="name">${esc(item.name || item.file)}</div>` +
+    `<div class="sub">${chip(STATUS_TEXT[item.status] || item.status, item.status)} ` +
+    `${veraChip(item)}` +
+    (item.output_changed === true ? ` ${chip("edited", "edited")}` : "") +
+    (item.flags.length ? ` ${chip(item.flags.length + " note(s)", "flag")}` : "") +
+    `</div>`;
+  div.onclick = () => select(item.file);
+  // the queue must work without a mouse: focusable, named, Enter/Space opens
+  div.tabIndex = 0;
+  div.setAttribute("role", "button");
+  div.setAttribute("aria-label", `Open ${item.name || item.file} for review`);
+  if (selected === item.file) div.setAttribute("aria-current", "true");
+  div.onkeydown = (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      select(item.file);
+    }
+  };
+  return div;
+}
+
+function sectionToggle(text, cls, expanded, onToggle) {
+  const head = document.createElement("div");
+  head.className = cls;
+  head.innerHTML = `<span class="caret">${expanded ? "▾" : "▸"}</span>${text}`;
+  head.tabIndex = 0;
+  head.setAttribute("role", "button");
+  head.setAttribute("aria-expanded", String(expanded));
+  head.onclick = onToggle;
+  head.onkeydown = (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onToggle();
+    }
+  };
+  return head;
+}
+
 function renderQueue() {
   const box = $("queue");
   box.innerHTML = "";
-  if (pending.length) {
-    const head = document.createElement("div");
-    head.className = "qsection";
-    head.textContent = `Waiting to process (${pending.length})`;
-    box.appendChild(head);
-    for (const name of pending) {
-      const div = document.createElement("div");
-      div.className = "qitem waiting";
-      div.innerHTML =
-        `<div class="name">${name}</div>` +
-        `<div class="sub">${chip("added, press Process", "draft")}</div>`;
-      box.appendChild(div);
-    }
-    const head2 = document.createElement("div");
-    head2.className = "qsection";
-    head2.textContent = "Processed documents";
-    box.appendChild(head2);
+  const code = moduleCode.trim();
+
+  // group everything (pending + processed) by module
+  const groups = new Map(); // "" = the legacy flat root
+  const ensure = (m) => {
+    const key = m || "";
+    if (!groups.has(key)) groups.set(key, { pending: [], review: [], done: [] });
+    return groups.get(key);
+  };
+  for (const relid of pending) {
+    const [m, name] = splitId(relid);
+    ensure(m).pending.push({ id: relid, name });
   }
   for (const item of queue) {
-    const div = document.createElement("div");
-    div.className = "qitem" + (selected === item.file ? " selected" : "");
-    div.innerHTML =
-      `<div class="name">${item.file}</div>` +
-      `<div class="sub">${chip(STATUS_TEXT[item.status] || item.status, item.status)} ` +
-      `${veraChip(item)}` +
-      (item.output_changed === true ? ` ${chip("edited", "edited")}` : "") +
-      (item.flags.length ? ` ${chip(item.flags.length + " note(s)", "flag")}` : "") +
-      `</div>`;
-    div.onclick = () => select(item.file);
-    // the queue must work without a mouse: focusable, named, Enter/Space opens
-    div.tabIndex = 0;
-    div.setAttribute("role", "button");
-    div.setAttribute("aria-label", `Open ${item.file} for review`);
-    if (selected === item.file) div.setAttribute("aria-current", "true");
-    div.onkeydown = (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        select(item.file);
-      }
-    };
-    box.appendChild(div);
+    const g = ensure(item.module);
+    (item.status === "approved" || item.status === "rejected" ? g.done : g.review).push(item);
   }
-  if (!queue.length && !pending.length) {
-    box.innerHTML = '<div class="qitem muted">No documents yet, add PDFs and press Process PDFs.</div>';
+  if (code) ensure(code); // the typed module always shows, even when empty
+
+  // typed module first, then the rest alphabetically, the flat root last
+  const keys = [...groups.keys()].sort((a, b) => {
+    if (a === code) return -1;
+    if (b === code) return 1;
+    if (!a) return 1;
+    if (!b) return -1;
+    return a.localeCompare(b);
+  });
+
+  for (const key of keys) {
+    const g = groups.get(key);
+    // newest processed/edited first -- the freshest work is at the top
+    g.review.sort((x, y) => (y.updated_at || 0) - (x.updated_at || 0));
+    g.done.sort((x, y) => (y.updated_at || 0) - (x.updated_at || 0));
+    const isTyped = key === code && code !== "";
+    const expanded = collapsedOverride.has(key) ? !collapsedOverride.get(key) : isTyped;
+    const counts = [];
+    if (g.pending.length) counts.push(`${g.pending.length} waiting`);
+    counts.push(`${g.review.length} to review`);
+    if (g.done.length) counts.push(`${g.done.length} done`);
+    const title = `<span class="mname">${key || "(no module)"}</span>` +
+      `<span class="mcounts">${counts.join(" · ")}</span>`;
+    box.appendChild(
+      sectionToggle(title, "mgroup-head" + (isTyped ? " current" : ""), expanded, () => {
+        collapsedOverride.set(key, expanded); // toggle: remember the user's choice
+        renderQueue();
+      })
+    );
+    if (!expanded) continue;
+
+    for (const p of g.pending) {
+      const div = document.createElement("div");
+      div.className = "qitem waiting";
+      // flat-root leftovers CANNOT be processed from the app (Process always
+      // works per module): say what to actually do instead of lying.
+      const hint = key
+        ? chip("added, press Process", "draft")
+        : chip("no module - move it into a module folder in the input folder", "flag");
+      div.innerHTML = `<div class="name">${esc(p.name)}</div><div class="sub">${hint}</div>`;
+      box.appendChild(div);
+    }
+    for (const item of g.review) box.appendChild(queueRow(item));
+    if (!g.pending.length && !g.review.length && !g.done.length) {
+      const empty = document.createElement("div");
+      empty.className = "qitem muted";
+      empty.textContent = "No documents yet - press Add PDFs.";
+      box.appendChild(empty);
+    }
+    if (g.done.length) {
+      const open = doneOpen.has(key);
+      box.appendChild(
+        sectionToggle(`Done (${g.done.length})`, "mdone-head", open, () => {
+          if (open) doneOpen.delete(key);
+          else doneOpen.add(key);
+          renderQueue();
+        })
+      );
+      if (open) for (const item of g.done) box.appendChild(queueRow(item));
+    }
   }
-  const n = pending.length;
-  $("run").textContent = n ? `Process ${n} PDF${n === 1 ? "" : "s"}` : "Process PDFs";
+
+  if (!queue.length && !pending.length && !code) {
+    box.innerHTML =
+      '<div class="qitem muted">No documents yet. Type your module code above, ' +
+      "then Add PDFs and press Process.</div>";
+  }
+
+  // Add / Process work per module: both wait for a module code.
+  const myPending = code
+    ? (groups.get(code) ? groups.get(code).pending.length : 0)
+    : 0;
+  $("run").textContent = myPending
+    ? `Process ${myPending} PDF${myPending === 1 ? "" : "s"} (${code})`
+    : "Process PDFs";
+  $("run").disabled = !code || batchRunning; // never re-arm mid-batch
+  $("run").title = code
+    ? `Process ${code}'s waiting PDFs`
+    : "Type your module code first";
+  $("add").disabled = !code;
+  $("add").title = code
+    ? `Add PDFs to ${code}`
+    : "Type your module code first";
+}
+
+async function refreshModules() {
+  knownModules = await api.modules().catch(() => []);
+  const datalist = $("module-list");
+  datalist.innerHTML = "";
+  for (const m of knownModules) {
+    const opt = document.createElement("option");
+    opt.value = m;
+    datalist.appendChild(opt);
+  }
 }
 
 async function refresh(keepSelection = true) {
   [queue, pending] = await Promise.all([api.listQueue(), api.listPending()]);
+  refreshModules(); // keep the module suggestions current (fire-and-forget)
   if (!keepSelection || !queue.some((q) => q.file === selected)) selected = null;
   renderQueue();
   if (selected) renderDetail();
@@ -241,7 +377,9 @@ async function renderDetail() {
   if (!item) return;
   $("detail-empty").hidden = true;
   $("detail-body").hidden = false;
-  $("doc-name").textContent = item.file;
+  $("doc-name").textContent = item.module
+    ? `${item.module} / ${item.name}`
+    : item.name || item.file;
   $("gate-result").textContent = "";
 
   const clauses = item.verapdf_failed_clauses || [];
@@ -1350,25 +1488,30 @@ async function stopBatch() {
 const LARGE_BATCH = 100;
 
 async function runBatch() {
+  const code = moduleCode.trim();
+  if (!code || batchRunning) return; // disabled buttons; belt and braces
+  const myPending = pending.filter((relid) => splitId(relid)[0] === code).length;
   if (
-    pending.length > LARGE_BATCH &&
+    myPending > LARGE_BATCH &&
     !window.confirm(
-      `You are about to process ${pending.length} PDFs. That is a lot to review ` +
+      `You are about to process ${myPending} PDFs for ${code}. That is a lot to review ` +
         "in one sitting.\n\nYou can process them in smaller batches (around 50 at a " +
         "time) — already-processed files are skipped, so nothing is wasted by " +
         "splitting it up.\n\nProcess all " +
-        pending.length +
+        myPending +
         " now anyway?"
     )
   ) {
     return; // they chose to trim the inbox and do a smaller batch
   }
+  batchRunning = true;
   $("run").disabled = true;
   setStatus("");
-  const started = await api.runBatchStart();
+  const started = await api.runBatchStart(code);
   if (started.error) {
     setStatus(started.error);
-    $("run").disabled = false;
+    batchRunning = false;
+    renderQueue(); // restore the button state consistently
     return;
   }
   $("stop").hidden = false;
@@ -1383,6 +1526,7 @@ async function runBatch() {
     }
     clearInterval(poll);
     $("stop").hidden = true; // the batch is over: nothing left to stop
+    batchRunning = false;
     $("run").disabled = false;
     if (s.total && !s.cancelled) {
       showProgress(s.total, s.total, ""); // fill to 100% before hiding
@@ -1415,12 +1559,19 @@ async function runBatch() {
 }
 
 async function addPdfs() {
-  const result = await api.addPdfs();
+  const code = moduleCode.trim();
+  if (!code) return; // the button is disabled without a module; belt and braces
+  const result = await api.addPdfs(code);
   if (result.copied && result.copied.length) {
-    setStatus(`Added: ${result.copied.join(", ")} - now press Process PDFs.`);
-    await refresh(); // they appear in "Waiting to process" immediately
+    setStatus(`Added to ${code}: ${result.copied.map((r) => splitId(r)[1]).join(", ")} - ` +
+      "now press Process PDFs.");
+    await refresh(); // they appear under their module immediately
   } else if (result.error) {
     setStatus(result.error);
+  } else {
+    // picker cancelled, or nothing usable picked: say so rather than nothing
+    // (only PDF files are accepted; a .docx pick is silently skipped upstream).
+    setStatus("Nothing was added - only PDF files can be added.");
   }
 }
 
@@ -1441,14 +1592,14 @@ const EDIT_TEXT = {
 
 function historyRow(e) {
   const when = e.ts ? new Date(e.ts).toLocaleString() : "-";
-  const file = e.file || "-";
+  const file = esc((e.module ? `${e.module} / ` : "") + (e.file || "-"));
   let what;
   if (e.event === "run") {
     const steps = (e.stages_applied || []).map((s) => STAGE_TEXT[s] || s).join(", ");
     what = `processed (${steps || "no steps"})`;
   } else if (e.event === "verify") {
     what =
-      `${STATUS_TEXT[e.decision] || e.decision} by ${e.reviewer}` +
+      `${STATUS_TEXT[e.decision] || e.decision} by ${esc(e.reviewer)}` +
       ` - automatic check ${e.verapdf_passed ? "passed" : "found issues"}`;
   } else if (EDIT_TEXT[e.event]) {
     what = EDIT_TEXT[e.event](e);
@@ -1488,6 +1639,25 @@ async function toggleHistory() {
 async function init() {
   $("run").onclick = runBatch;
   $("stop").onclick = stopBatch;
+  const moduleInput = $("module-code");
+  moduleInput.value = moduleCode;
+  moduleInput.oninput = () => {
+    // Case handling, for real (CSS text-transform is display-only): an
+    // EXISTING module keeps its exact folder casing -- typing or picking
+    // "mg2001" when that folder exists must select it, not invent a second
+    // "MG2001" (folders are case-sensitive on the Linux deploy target). Only
+    // a brand-NEW code is normalised to uppercase.
+    const caret = moduleInput.selectionStart;
+    const typed = moduleInput.value.trim();
+    const existing = knownModules.find((m) => m.toLowerCase() === typed.toLowerCase());
+    moduleInput.value = existing || moduleInput.value.toUpperCase();
+    moduleInput.setSelectionRange(caret, caret);
+    moduleCode = moduleInput.value;
+    try {
+      localStorage.setItem("speade-module", moduleCode.trim());
+    } catch (e) { /* storage unavailable: the box still works for this session */ }
+    renderQueue();
+  };
   $("save-meta").onclick = saveMeta;
   $("doc-lang").onchange = () => {
     $("doc-lang-other").hidden = $("doc-lang").value !== "__other";
@@ -1495,7 +1665,7 @@ async function init() {
   };
   $("refresh").onclick = () => refresh();
   $("add").onclick = addPdfs;
-  $("open-inbox").onclick = () => api.openInbox();
+  $("open-inbox").onclick = () => api.openInbox(moduleCode.trim());
   $("open-outbox").onclick = () => api.openOutbox();
   $("approve").onclick = () => decide(true);
   $("reject").onclick = () => decide(false);

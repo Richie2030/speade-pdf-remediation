@@ -32,17 +32,24 @@ A window opens with:
 
 Hover the folder buttons to see the full folder paths on this PC.
 
-## Step 2 — add the PDFs you want to remediate
+## Step 2 — type your module code, then add the PDFs
 
-Two ways, same result:
+First type your **module code** (e.g. `MG2001`) in the box at the top left —
+*Add PDFs…* and *Process PDFs* stay greyed out until you do. Each module keeps
+its own folders, and the document list groups everything per module (click a
+module's name to open or hide its documents; finished ones tuck themselves
+away under **Done**).
+
+Then, two ways, same result:
 
 - click **Add PDFs…** and pick the files, **or**
-- click **Open input folder** and copy files in yourself.
+- click **Open input folder** (it opens *your module's* folder) and copy
+  files in yourself.
 
-Added files appear immediately in the list under **"Waiting to process"**, and
-the button changes to **"Process 3 PDFs"** so you can see exactly what will
-run. Your original files are **never modified** — SPEADE always works on
-copies.
+Added files appear immediately under your module, and the button changes to
+**"Process 3 PDFs (MG2001)"** so you can see exactly what will run — only
+*your module's* files, never another module's. Your original files are
+**never modified** — SPEADE always works on copies.
 
 ## Step 3 — press Process PDFs
 
@@ -218,12 +225,16 @@ Inside the `speade-desktop` folder:
 
 | folder | contents |
 |---|---|
-| `data\inbox` | the source PDFs you added — untouched, ever |
-| `data\outbox` | drafts awaiting review — PDFs only |
-| `data\outbox\approved` | approved documents — the ready-to-share shelf |
-| `data\outbox\rejected` | rejected documents — fix in Acrobat, then re-approve |
-| `data\sidecars` *(hidden)* | one record file per document — its full history |
-| `data\audit` *(hidden)* | the permanent log — one line per run and decision |
+| `data\inbox\MG2001` | a module's source PDFs — untouched, ever |
+| `data\outbox\MG2001` | that module's drafts awaiting review — PDFs only |
+| `data\outbox\MG2001\approved` | approved documents — the ready-to-share shelf |
+| `data\outbox\MG2001\rejected` | rejected documents — fix in Acrobat, then re-approve |
+| `data\sidecars` *(hidden)* | one record file per document (per module) — its full history |
+| `data\audit` *(hidden)* | the permanent log — one line per run and decision, all modules |
+
+(One folder set like this exists per module; PDFs dropped straight into the
+`inbox` root show as a "(no module)" group and must be moved into a module
+folder before the app can process them.)
 
 The two hidden folders are the app's internal records — leave them alone. When
 an approved document is sent onward, **send the PDF only**.

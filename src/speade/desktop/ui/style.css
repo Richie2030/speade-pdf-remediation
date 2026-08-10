@@ -61,6 +61,15 @@ button.reject { background: var(--bad); border-color: var(--bad); color: #fff; }
 button:disabled { opacity: .5; cursor: default; }
 .muted { color: var(--ink-muted); font-size: 14px; }
 
+/* the Student Partner's module code: the key that scopes Add + Process */
+#module-wrap { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+#module-code {
+  font: inherit; font-size: 16px; padding: 6px 10px; min-height: 42px;
+  border: 2px solid var(--ucc-navy); border-radius: 8px; width: 150px;
+  text-transform: uppercase;
+}
+#module-code:focus-visible { outline: 3px solid var(--ucc-yellow); outline-offset: 1px; }
+
 #progress-wrap { display: flex; align-items: center; gap: 10px; }
 #progress { width: 220px; height: 16px; accent-color: var(--ucc-navy); }
 #progress-text { font-size: 14px; color: var(--ink-muted); }
@@ -75,6 +84,32 @@ main { flex: 1; display: flex; min-height: 0; }
   text-transform: uppercase; color: var(--ink-muted); background: var(--bg);
   border-bottom: 1px solid var(--line);
 }
+/* module group headers: the sidebar is a tree of collapsible modules */
+.mgroup-head {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 10px 14px; background: var(--bg); border-bottom: 1px solid var(--line);
+  font-size: 14px; font-weight: 700; color: var(--ucc-navy);
+  position: sticky; top: 0; z-index: 2;
+}
+.mgroup-head:hover { background: #e8f0f7; }
+.mgroup-head.current { background: var(--ucc-navy); color: #fff; }
+.mgroup-head.current:hover { background: var(--ucc-navy-dark); }
+.mgroup-head .caret { width: 14px; flex: none; }
+.mgroup-head .mname { flex: 1; letter-spacing: .3px; }
+.mgroup-head .mcounts { font-weight: 400; font-size: 12.5px; opacity: .85; }
+.mgroup-head:focus-visible {
+  outline: 3px solid var(--ucc-yellow); outline-offset: -3px;
+}
+/* the collapsed "Done (N)" shelf inside a group */
+.mdone-head {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 6px 14px 6px 24px; font-size: 13px; font-weight: 700;
+  color: var(--ink-muted); background: #fbfcfe; border-bottom: 1px solid #edf1f6;
+}
+.mdone-head:hover { background: #eef4f9; }
+.mdone-head .caret { width: 14px; flex: none; }
+.mdone-head:focus-visible { outline: 3px solid var(--ucc-yellow); outline-offset: -3px; }
+
 .qitem.waiting { cursor: default; background: #fbfcfe; }
 .qitem.waiting .name { color: var(--ink-muted); }
 .qitem { padding: 12px 14px; border-bottom: 1px solid #edf1f6; cursor: pointer; }

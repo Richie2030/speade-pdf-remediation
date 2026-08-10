@@ -19,3 +19,11 @@ def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     if sys.platform == "win32":
         kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
     return subprocess.run(cmd, **kwargs)
+
+
+def popen(cmd: list[str], **kwargs) -> subprocess.Popen:
+    """`subprocess.Popen` with the same hidden-console default, for the one
+    long-lived child (the sacrificial page renderer) that `run` cannot model."""
+    if sys.platform == "win32":
+        kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
+    return subprocess.Popen(cmd, **kwargs)

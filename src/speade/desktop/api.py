@@ -53,9 +53,14 @@ class SpeadeApi:
         self._window = window
 
     def _resolve(self, file: str) -> Path | None:
-        """A bare filename -> its current home in the outbox tree (root while a
-        draft, approved/ or rejected/ once decided). Names only, never paths."""
-        return service.find_output(Path(file).name, self._config_path)
+        """A rel-id ("MG2001/notes.pdf", or "notes.pdf" for the flat root) ->
+        its current home in the outbox tree (module root while a draft,
+        approved/ or rejected/ once decided). service.split_id sanitises the
+        id, so nothing can reach outside the workspace."""
+        try:
+            return service.find_output(file, self._config_path)
+        except ValueError:  # a malformed id is "not found", never a crash
+            return None
 
     # ------------------------------------------------------------- read side
     def workspace(self) -> dict:
@@ -76,6 +81,10 @@ class SpeadeApi:
 
     def list_queue(self) -> list[dict]:
         return [item.model_dump(mode="json") for item in service.list_queue(self._config_path)]
+
+    def modules(self) -> list[str]:
+        """Every module folder in the workspace -- the module box's suggestions."""
+        return service.list_modules(self._config_path)
 
     def load_pdf(self, file: str) -> dict:
         """The outbox draft as a data: URI for the embedded preview pane."""
@@ -128,9 +137,10 @@ class SpeadeApi:
             return {"error": f"page image unavailable: {str(exc)[:120]}"}
         if "error" in result:
             return {"error": result["error"]}
-        encoded = base64.b64encode(result["png"]).decode("ascii")
+        # the worker already speaks base64 (its pipe protocol): straight into
+        # the data: URI, no decode/re-encode round trip.
         return {
-            "data_uri": f"data:image/png;base64,{encoded}",
+            "data_uri": f"data:image/png;base64,{result['png_b64']}",
             "width": result["width"],
             "height": result["height"],
             "pages": result["pages"],
@@ -150,22 +160,32 @@ class SpeadeApi:
         return service.audit_events(self._config_path, limit=limit)
 
     # ------------------------------------------------------------ write side
-    def run_batch(self) -> list[dict]:
-        """Sweep the configured inbox; one bad file never kills the batch.
-        Synchronous variant (blocks until done) -- the UI uses run_batch_start
-        + run_batch_status for its progress bar instead."""
-        return [item.model_dump(mode="json") for item in service.run_batch(None, self._config_path)]
+    def run_batch(self, module: str | None = None) -> list[dict]:
+        """Sweep the configured inbox (one module's folder when given); one bad
+        file never kills the batch. Synchronous variant (blocks until done) --
+        the UI uses run_batch_start + run_batch_status for its progress bar."""
+        return [
+            item.model_dump(mode="json")
+            for item in service.run_batch(None, self._config_path, module=module or None)
+        ]
 
     def list_pending(self) -> list[str]:
         """Inbox files still waiting to be processed -- the sidebar's 'Waiting
         to process' section (already-done documents are not listed again)."""
         return service.list_pending(self._config_path)
 
-    def run_batch_start(self, reprocess: bool = False) -> dict:
+    def run_batch_start(self, reprocess: bool = False, module: str | None = None) -> dict:
         """Kick off a batch on a worker thread; the UI polls run_batch_status.
         pywebview runs each bridge call on its own thread, so status polls keep
         flowing while the worker grinds through the inbox. Already-processed,
-        unchanged files are skipped unless `reprocess` is set."""
+        unchanged files are skipped unless `reprocess` is set. `module`
+        restricts the sweep to that module's inbox folder (the Student-Partner
+        rule: process only your own module's batch)."""
+        if module:
+            try:
+                module = service.normalize_module(module)
+            except ValueError as exc:
+                return {"error": str(exc)}
         with self._batch_lock:
             if self._batch.get("running"):
                 return {"error": "a batch is already running"}
@@ -182,6 +202,7 @@ class SpeadeApi:
                     progress=progress,
                     cancel=lambda: bool(self._batch.get("cancel")),
                     reprocess=reprocess,
+                    module=module or None,
                 )
                 self._batch["items"] = [item.model_dump(mode="json") for item in items]
                 self._batch["cancelled"] = bool(self._batch.get("cancel"))
@@ -386,16 +407,21 @@ class SpeadeApi:
     def reprocess(self, file: str) -> dict:
         """Undo every edit by re-running the original inbox document."""
         try:
-            sidecar = service.reprocess(Path(file).name, self._config_path)
+            sidecar = service.reprocess(file, self._config_path)
             return {"ok": True, "verapdf_passed": sidecar.verapdf_passed}
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, ValueError) as exc:
             return {"error": str(exc)}
         except Exception as exc:
             return {"error": f"could not reprocess: {str(exc)[:120]}"}
 
     def decide(self, file: str, reviewer: str, approve: bool) -> dict:
         """The human gate: veraPDF verdict + the reviewer's decision (service.decide)."""
-        pdf = self._resolve(file) or service.workspace(self._config_path).outbox / Path(file).name
+        try:
+            module, name = service.split_id(file)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        outbox = service.workspace(self._config_path).outbox
+        pdf = self._resolve(file) or (outbox / module if module else outbox) / name
         try:
             sidecar = service.decide(
                 pdf, reviewer=reviewer, approve=approve, config_path=self._config_path
@@ -412,10 +438,16 @@ class SpeadeApi:
             "reviewer": sidecar.approval.reviewer,
         }
 
-    def add_pdfs(self) -> dict:
-        """Native file picker -> copy the chosen PDFs into the inbox."""
+    def add_pdfs(self, module: str | None = None) -> dict:
+        """Native file picker -> copy the chosen PDFs into the inbox (the given
+        module's folder, so every added document belongs to a module)."""
         if self._window is None:
             return {"error": "window not ready"}
+        if module:
+            try:
+                module = service.normalize_module(module)
+            except ValueError as exc:
+                return {"error": str(exc)}
         import webview  # lazy: only the running app has a window anyway
 
         picks = (
@@ -425,12 +457,14 @@ class SpeadeApi:
             or ()
         )
         inbox = service.workspace(self._config_path).inbox
+        if module:
+            inbox = inbox / module
         inbox.mkdir(parents=True, exist_ok=True)
         copied = []
         for pick in picks:
             dest = inbox / Path(pick).name
             shutil.copy2(pick, dest)
-            copied.append(dest.name)
+            copied.append(service.make_id(module or None, dest.name))
         return {"copied": copied}
 
     def open_output(self, file: str) -> bool:
@@ -441,9 +475,17 @@ class SpeadeApi:
         _open_native(pdf)
         return True
 
-    def open_inbox(self) -> bool:
-        """Open the input folder in the file explorer (drop PDFs in directly)."""
+    def open_inbox(self, module: str | None = None) -> bool:
+        """Open the input folder in the file explorer (drop PDFs in directly).
+        With a module code typed, open THAT module's folder (created on the
+        spot), so direct drops land where Process can actually find them."""
         inbox = service.workspace(self._config_path).inbox
+        if module:
+            try:
+                inbox = inbox / service.normalize_module(module)
+                inbox.mkdir(parents=True, exist_ok=True)
+            except (ValueError, OSError):
+                inbox = service.workspace(self._config_path).inbox
         if not inbox.is_dir():
             return False
         _open_native(inbox)
