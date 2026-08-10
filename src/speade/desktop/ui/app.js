@@ -17,6 +17,38 @@ const collapsedOverride = new Map(); // module key -> user's explicit open/close
 const doneOpen = new Set(); // module keys whose "Done" section is expanded
 let knownModules = []; // existing module folders, for case-snapping the box
 let batchRunning = false; // renderQueue must not re-enable Process mid-batch
+let autoCheck = false; // run the accessibility check after EVERY edit (Settings)
+// One edit at a time. A drag now applies on release, so a second gesture
+// during the ~1s save would send a request built from the PRE-edit tree: the
+// backend serialises the writes, but the second one's ids/indexes are stale.
+// Refusing to start a second edit is the honest fix.
+let editBusy = false;
+// a drag's trailing click must not also open the box it ended on. The click
+// lands on the nearest common ancestor of press and release, which is NOT the
+// band when the drag ends outside it -- so a flag, not a band listener.
+let dragJustEnded = false;
+
+function setEditBusy(busy) {
+  editBusy = busy;
+  document.body.classList.toggle("edit-busy", busy);
+}
+// documents/modules the reviewer has removed from the side panel. A view
+// filter only: every file stays on disk, and "Show hidden" brings them back.
+let hiddenDocs = new Set();
+let hiddenModules = new Set();
+try {
+  autoCheck = localStorage.getItem("speade-auto-check") === "1";
+  hiddenDocs = new Set(JSON.parse(localStorage.getItem("speade-hidden-docs") || "[]"));
+  hiddenModules = new Set(JSON.parse(localStorage.getItem("speade-hidden-modules") || "[]"));
+} catch (e) { /* storage unavailable: defaults are fine */ }
+let showHidden = false; // temporarily reveal what has been hidden
+
+function saveHidden() {
+  try {
+    localStorage.setItem("speade-hidden-docs", JSON.stringify([...hiddenDocs]));
+    localStorage.setItem("speade-hidden-modules", JSON.stringify([...hiddenModules]));
+  } catch (e) { /* storage unavailable: hiding still works for this session */ }
+}
 
 // filenames are user/browser-supplied and land in innerHTML: escape them.
 function esc(text) {
@@ -94,6 +126,9 @@ function chip(text, cls) {
 }
 
 function veraChip(item) {
+  // an edit made with the check switched off invalidates the old verdict:
+  // never show a stale pass/fail as if it described the current file.
+  if (item.verapdf_stale) return chip("changed since the last check", "flag");
   if (item.verapdf_passed === true) return chip("auto-check: passed", "pass");
   if (item.verapdf_passed === false) {
     const n = (item.verapdf_failed_clauses || []).length;
@@ -110,7 +145,10 @@ function veraChip(item) {
 
 function queueRow(item) {
   const div = document.createElement("div");
-  div.className = "qitem" + (selected === item.file ? " selected" : "");
+  div.className =
+    "qitem" +
+    (selected === item.file ? " selected" : "") +
+    (hiddenDocs.has(item.file) ? " is-hidden" : "");
   div.innerHTML =
     `<div class="name">${esc(item.name || item.file)}</div>` +
     `<div class="sub">${chip(STATUS_TEXT[item.status] || item.status, item.status)} ` +
@@ -118,6 +156,24 @@ function queueRow(item) {
     (item.output_changed === true ? ` ${chip("edited", "edited")}` : "") +
     (item.flags.length ? ` ${chip(item.flags.length + " note(s)", "flag")}` : "") +
     `</div>`;
+  // remove from the panel: a view filter, never a delete -- the draft, the
+  // approved copy, the record and the audit trail all stay exactly as they are.
+  const close = document.createElement("button");
+  close.className = "qclose";
+  const isHidden = hiddenDocs.has(item.file);
+  close.textContent = isHidden ? "↩" : "×";
+  close.title = isHidden
+    ? "Put this document back in the list"
+    : "Remove from this list (the files are kept)";
+  close.setAttribute("aria-label", close.title);
+  close.onclick = (e) => {
+    e.stopPropagation();
+    if (isHidden) hiddenDocs.delete(item.file);
+    else hiddenDocs.add(item.file);
+    saveHidden();
+    renderQueue();
+  };
+  div.appendChild(close);
   div.onclick = () => select(item.file);
   // the queue must work without a mouse: focusable, named, Enter/Space opens
   div.tabIndex = 0;
@@ -154,6 +210,13 @@ function renderQueue() {
   const box = $("queue");
   box.innerHTML = "";
   const code = moduleCode.trim();
+  // the module you are working IN can never be hidden: otherwise Add PDFs
+  // lands files you cannot see and Process reports "no PDFs" while its inbox
+  // is full. Typing a module un-removes it.
+  if (code && hiddenModules.has(code)) {
+    hiddenModules.delete(code);
+    saveHidden();
+  }
 
   // group everything (pending + processed) by module
   const groups = new Map(); // "" = the legacy flat root
@@ -162,11 +225,17 @@ function renderQueue() {
     if (!groups.has(key)) groups.set(key, { pending: [], review: [], done: [] });
     return groups.get(key);
   };
+  // a document (or a whole module) the reviewer removed from the panel is
+  // filtered out here -- a view filter only; every file stays on disk.
+  const isHidden = (module, relid) =>
+    !showHidden && (hiddenDocs.has(relid) || hiddenModules.has(module || ""));
   for (const relid of pending) {
     const [m, name] = splitId(relid);
+    if (isHidden(m, relid)) continue;
     ensure(m).pending.push({ id: relid, name });
   }
   for (const item of queue) {
+    if (isHidden(item.module, item.file)) continue;
     const g = ensure(item.module);
     (item.status === "approved" || item.status === "rejected" ? g.done : g.review).push(item);
   }
@@ -187,19 +256,44 @@ function renderQueue() {
     g.review.sort((x, y) => (y.updated_at || 0) - (x.updated_at || 0));
     g.done.sort((x, y) => (y.updated_at || 0) - (x.updated_at || 0));
     const isTyped = key === code && code !== "";
-    const expanded = collapsedOverride.has(key) ? !collapsedOverride.get(key) : isTyped;
+    const expanded =
+      (collapsedOverride.has(key) ? !collapsedOverride.get(key) : isTyped) &&
+      !hiddenModules.has(key); // a revealed-but-removed module stays folded
     const counts = [];
     if (g.pending.length) counts.push(`${g.pending.length} waiting`);
     counts.push(`${g.review.length} to review`);
     if (g.done.length) counts.push(`${g.done.length} done`);
     const title = `<span class="mname">${key || "(no module)"}</span>` +
       `<span class="mcounts">${counts.join(" · ")}</span>`;
-    box.appendChild(
-      sectionToggle(title, "mgroup-head" + (isTyped ? " current" : ""), expanded, () => {
+    const head = sectionToggle(
+      title,
+      "mgroup-head" + (isTyped ? " current" : ""),
+      expanded,
+      () => {
         collapsedOverride.set(key, expanded); // toggle: remember the user's choice
         renderQueue();
-      })
+      }
     );
+    // remove the WHOLE module from the panel (files untouched, restorable).
+    // While "Show" is on, a removed module offers the reverse instead, so a
+    // single module can come back without restoring every other one.
+    const moduleHidden = hiddenModules.has(key);
+    const hideAll = document.createElement("button");
+    hideAll.className = "qclose";
+    hideAll.textContent = moduleHidden ? "↩" : "×";
+    hideAll.title = moduleHidden
+      ? `Put ${key || "these documents"} back in the list`
+      : `Remove ${key || "these documents"} from this list (the files are kept)`;
+    hideAll.setAttribute("aria-label", hideAll.title);
+    hideAll.onclick = (e) => {
+      e.stopPropagation();
+      if (moduleHidden) hiddenModules.delete(key);
+      else hiddenModules.add(key);
+      saveHidden();
+      renderQueue();
+    };
+    head.appendChild(hideAll);
+    box.appendChild(head);
     if (!expanded) continue;
 
     for (const p of g.pending) {
@@ -239,6 +333,34 @@ function renderQueue() {
       "then Add PDFs and press Process.</div>";
   }
 
+  // anything removed from the panel is one click from coming back -- nothing
+  // was deleted, so the reviewer is never stranded.
+  if (hiddenDocs.size || hiddenModules.size) {
+    const total = hiddenDocs.size + hiddenModules.size;
+    const restore = document.createElement("div");
+    restore.className = "qrestore";
+    restore.innerHTML = showHidden
+      ? "<b>Showing removed documents</b>"
+      : `${total} removed from this list`;
+    const toggle = document.createElement("button");
+    toggle.textContent = showHidden ? "Hide again" : "Show";
+    toggle.onclick = () => {
+      showHidden = !showHidden;
+      renderQueue();
+    };
+    const clear = document.createElement("button");
+    clear.textContent = "Put all back";
+    clear.onclick = () => {
+      hiddenDocs.clear();
+      hiddenModules.clear();
+      showHidden = false;
+      saveHidden();
+      renderQueue();
+    };
+    restore.append(toggle, clear);
+    box.appendChild(restore);
+  }
+
   // Add / Process work per module: both wait for a module code.
   const myPending = code
     ? (groups.get(code) ? groups.get(code).pending.length : 0)
@@ -267,16 +389,37 @@ async function refreshModules() {
   }
 }
 
-async function refresh(keepSelection = true) {
+// `skipDetail`: the caller is mid-edit and will refresh the detail pane itself
+// (cheaply). Re-rendering it here would re-fetch the whole tag tree a second
+// time for the same edit -- the double load that made editing feel slow.
+async function refresh(keepSelection = true, { skipDetail = false } = {}) {
   [queue, pending] = await Promise.all([api.listQueue(), api.listPending()]);
   refreshModules(); // keep the module suggestions current (fire-and-forget)
   if (!keepSelection || !queue.some((q) => q.file === selected)) selected = null;
   renderQueue();
-  if (selected) renderDetail();
-  else {
+  if (selected) {
+    if (!skipDetail) renderDetail();
+  } else {
     $("detail-body").hidden = true;
     $("detail-empty").hidden = false;
   }
+}
+
+// Where the reviewer is looking, so an edit does not throw them back to the
+// top of the document (the complaint after tagging a dragged section).
+function captureView() {
+  return {
+    page: $("page-scroll").scrollTop,
+    tree: $("tag-tree").scrollTop,
+    detail: $("detail").scrollTop,
+  };
+}
+
+function restoreView(view) {
+  if (!view) return;
+  $("page-scroll").scrollTop = view.page;
+  $("tag-tree").scrollTop = view.tree;
+  $("detail").scrollTop = view.detail;
 }
 
 // ------------------------------------------------------------------ detail
@@ -372,16 +515,11 @@ function structureText(s) {
   return text;
 }
 
-async function renderDetail() {
-  const item = queue.find((q) => q.file === selected);
-  if (!item) return;
-  $("detail-empty").hidden = true;
-  $("detail-body").hidden = false;
-  $("doc-name").textContent = item.module
-    ? `${item.module} / ${item.name}`
-    : item.name || item.file;
-  $("gate-result").textContent = "";
-
+// The facts block (what happened, the check verdict, flags, edited banner,
+// undo depth). Split out of renderDetail so an edit can refresh JUST this --
+// re-running the whole detail pane meant re-fetching the tag tree twice per
+// keystroke-sized change, which is most of why editing felt slow.
+function renderFacts(item) {
   const clauses = item.verapdf_failed_clauses || [];
   const issueText = clauses.length
     ? `${clauses.length} issue${clauses.length === 1 ? "" : "s"} - ` +
@@ -390,15 +528,17 @@ async function renderDetail() {
         .map((line) => `<br><span class="issue-line">${line}</span>`)
         .join("")
     : "found issues";
+  const checkText = item.verapdf_stale
+    ? "not checked since your last change - press <b>Check accessibility</b> " +
+      "(your decision at the end always runs it)"
+    : item.verapdf_passed === null
+      ? "runs after processing and again when you decide"
+      : item.verapdf_passed
+        ? "passed (PDF/UA accessibility rules)"
+        : issueText;
   $("facts").innerHTML =
     `<dt>Processed</dt><dd>${processedText(item)}</dd>` +
-    `<dt>Automatic check</dt><dd>${
-      item.verapdf_passed === null
-        ? "runs after processing and again when you decide"
-        : item.verapdf_passed
-          ? "passed (PDF/UA accessibility rules)"
-          : issueText
-    }</dd>` +
+    `<dt>Automatic check</dt><dd>${checkText}</dd>` +
     `<dt>Structure</dt><dd id="structure-fact">checking&hellip;</dd>` +
     `<dt>Status</dt><dd>${STATUS_TEXT[item.status] || item.status}${
       item.reviewer ? " by " + item.reviewer : ""
@@ -421,6 +561,18 @@ async function renderDetail() {
     const cell = document.getElementById("structure-fact");
     if (cell && selected === item.file) cell.textContent = structureText(s);
   });
+}
+
+async function renderDetail() {
+  const item = queue.find((q) => q.file === selected);
+  if (!item) return;
+  $("detail-empty").hidden = true;
+  $("detail-body").hidden = false;
+  $("doc-name").textContent = item.module
+    ? `${item.module} / ${item.name}`
+    : item.name || item.file;
+  $("gate-result").textContent = "";
+  renderFacts(item);
 
   // current title + language into the editable fields (also async + guarded).
   $("meta-result").textContent = "";
@@ -577,7 +729,10 @@ function nodeBox(node, size) {
   div.className = "hlbox";
   boxStyle(div, node.box, size);
   div.title = typeText(node.type) + (node.text ? ` - ${node.text}` : "");
-  div.onclick = () => selectNode(node, { scrollTree: true });
+  div.onclick = () => {
+    if (dragJustEnded) return; // the tail of a drag, not a click on this box
+    selectNode(node, { scrollTree: true });
+  };
   node.__box = div; // the marquee highlights selections through this
   // Acrobat-style chip at the box's top-left naming the tag type.
   const tag = document.createElement("span");
@@ -783,7 +938,7 @@ function renderTree() {
 
 function startMarquee(e, band, pageIndex, size) {
   // untagged documents still get the marquee: dragging is how they get tags back
-  if (e.button !== 0 || !structTree) return;
+  if (e.button !== 0 || !structTree || editBusy) return;
   if (!structTree.tagged && !(structTree.untagged || []).length) return;
   e.preventDefault(); // no native image drag, no text selection
   const rect = band.getBoundingClientRect();
@@ -821,7 +976,8 @@ function startMarquee(e, band, pageIndex, size) {
     const [px0, py0, px1, py1] = shape(ev);
     marquee.remove();
     // one drag must not ALSO fire the click of whatever box it ended on
-    band.addEventListener("click", (c) => c.stopPropagation(), { capture: true, once: true });
+    dragJustEnded = true;
+    setTimeout(() => (dragJustEnded = false), 0); // cleared after the click lands
     // CSS pixels -> PDF points (y flips: PDF measures from the bottom)
     const sel = [
       (px0 / rect.width) * size.width,
@@ -886,35 +1042,51 @@ function setBulkSelection(nodes, lines, loose) {
       band.appendChild(mark);
     }
   }
-  const bar = $("bulk-bar");
-  bar.hidden = false;
   const parts = [];
   if (bulkSelected.length >= 2) parts.push(`${bulkSelected.length} tags`);
   if (lines.length) parts.push(`${lines.length} line${lines.length === 1 ? "" : "s"}`);
   if (loose.length) parts.push(`${loose.length} untagged`);
   $("bulk-count").textContent = parts.join(" · ") + " selected";
-  for (const id of ["bulk-merge", "bulk-retag", "bulk-deco"]) {
-    $(id).disabled = bulkSelected.length < 2;
+
+  // A drag that creates a NEW tag (untagged content, or lines carved out of a
+  // tag) needs no button: it becomes the type chosen in the bar, immediately.
+  // A drag across two or more WHOLE tags still asks, because "merge into one"
+  // and "change each" are genuinely different outcomes.
+  if (bulkSelected.length < 2 && (loose.length || lines.length)) {
+    runBulk(loose.length ? "tagnew" : "carve");
+    return;
   }
-  $("bulk-carve").disabled = lines.length === 0;
-  $("bulk-tag").disabled = loose.length === 0;
+  if (bulkSelected.length >= 2 && (loose.length || lines.length)) {
+    // the bar acts on whole tags only: stop highlighting parts it cannot touch,
+    // and say so rather than leaving a promise the buttons do not keep.
+    document.querySelectorAll(".linesel, .unsel").forEach((el) => el.remove());
+    bulkLines = [];
+    bulkUntagged = [];
+    $("bulk-count").textContent =
+      `${bulkSelected.length} tags selected · untagged content in the rectangle ` +
+      "was left alone (drag it on its own to tag it)";
+  }
+  $("bulk-actions").hidden = bulkSelected.length < 2;
+}
+
+function fillTagTypes() {
   const select = $("bulk-type");
-  if (!select.options.length) {
-    for (const t of tagTypes) {
-      const opt = document.createElement("option");
-      opt.value = t;
-      opt.textContent = `${typeText(t)} (${t})`;
-      select.appendChild(opt);
-    }
-    select.value = "P";
+  if (select.options.length) return;
+  for (const t of tagTypes) {
+    const opt = document.createElement("option");
+    opt.value = t;
+    opt.textContent = `${typeText(t)} (${t})`;
+    select.appendChild(opt);
   }
+  select.value = "P";
 }
 
 function clearBulkSelection() {
   bulkSelected = [];
   bulkLines = [];
   bulkUntagged = [];
-  $("bulk-bar").hidden = true;
+  $("bulk-actions").hidden = true;
+  $("bulk-count").textContent = "drag over anything the app missed";
   document.querySelectorAll(".bulksel").forEach((el) => el.classList.remove("bulksel"));
   document.querySelectorAll(".linesel, .unsel").forEach((el) => el.remove());
 }
@@ -927,7 +1099,7 @@ async function runBulk(action) {
     retag: bulkSelected.length >= 2,
     decorative: bulkSelected.length >= 2,
   }[action];
-  if (!armed) return;
+  if (!armed || editBusy) return; // one edit at a time: ids shift underneath
   const n = { carve: bulkLines.length, tagnew: bulkUntagged.length }[action] || bulkSelected.length;
   const newType = $("bulk-type").value || "P";
   if (action === "decorative") {
@@ -943,7 +1115,8 @@ async function runBulk(action) {
       return;
     }
   }
-  const buttons = ["bulk-merge", "bulk-retag", "bulk-deco", "bulk-carve", "bulk-tag"];
+  const buttons = ["bulk-merge", "bulk-retag", "bulk-deco"];
+  setEditBusy(true);
   for (const id of buttons) $(id).disabled = true;
   setStatus("Applying to the selection…");
   let result;
@@ -964,6 +1137,7 @@ async function runBulk(action) {
     result = await api.bulkEdit(selected, action, bulkSelected.map((s) => s.id), newType);
   }
   for (const id of buttons) $(id).disabled = false;
+  setEditBusy(false);
   if (result.error) {
     setStatus(result.error);
     return;
@@ -975,13 +1149,15 @@ async function runBulk(action) {
     carve: `${n} line${n === 1 ? "" : "s"} carved into a new ${typeText(newType)}`,
     tagnew: `${n} untagged piece${n === 1 ? "" : "s"} tagged as ${typeText(newType)}`,
   }[action];
-  const verdict = result.verapdf_passed
-    ? "automatic check now passes"
-    : `automatic check: ${(result.failed_clauses || []).length} issue(s) left`;
-  setStatus(`${what} - ${verdict}. One "Undo last change" reverses all of it.`);
+  setStatus(`${what} - ${verdictText(result)}. One "Undo last change" reverses all of it.`);
   const file = selected;
-  await refresh();
-  if (selected === file) await loadStructure(file); // clears the selection too
+  const view = captureView();
+  await refresh(true, { skipDetail: true });
+  if (selected !== file) return;
+  const item = queue.find((q) => q.file === file);
+  if (item) renderFacts(item);
+  await loadStructure(file); // ids shift: the tree must be re-read
+  restoreView(view); // ...but the reviewer stays on the section they tagged
 }
 
 // ------------------------------------------------------------ tag editing
@@ -1014,23 +1190,44 @@ function showEditor(node) {
   $("unwrap-tag").hidden = (node.lines || []).length > 0;
 }
 
-async function afterEdit(result, message) {
+// What to say about the accessibility check after an edit. With the check
+// switched off there IS no verdict -- say so plainly rather than repeating a
+// verdict that predates the change.
+function verdictText(result) {
+  if (result.checked === false) {
+    return "not checked yet (press Check accessibility when you are ready)";
+  }
+  return result.verapdf_passed
+    ? "automatic check now passes"
+    : `automatic check: ${(result.failed_clauses || []).length} issue(s) left`;
+}
+
+// `opts.treeUnchanged`: the edit altered a tag's own properties (its type, its
+// description) without adding or removing elements, so every node id still
+// resolves and the expensive tree+pages rebuild can be skipped entirely.
+async function afterEdit(result, message, opts = {}) {
   if (result.error) {
     $("editor-result").textContent = result.error;
     return;
   }
-  const verdict = result.verapdf_passed
-    ? "automatic check now passes"
-    : `automatic check: ${(result.failed_clauses || []).length} issue(s) left`;
-  $("editor-result").textContent = `${message} - ${verdict}.`;
+  $("editor-result").textContent = `${message} - ${verdictText(result)}.`;
   const file = selected;
   const nodeId = selectedNode ? selectedNode.id : null;
-  await refresh(); // re-reads the queue: the "edited" chip + banner appear
-  if (selected === file) {
-    await loadStructure(file); // rebuild the tree from the changed PDF
-    const again = findNodeById(structTree && structTree.root, nodeId);
-    if (again) selectNode(again, { scrollTree: true });
+  const view = captureView();
+  await refresh(true, { skipDetail: true }); // queue chips + banner, no tree
+  if (selected !== file) return;
+  const item = queue.find((q) => q.file === file);
+  if (item) renderFacts(item);
+  if (opts.treeUnchanged) {
+    // the tree object is still valid, but the derived header counter is not
+    updateAltWalkButton();
+    restoreView(view);
+    return;
   }
+  await loadStructure(file); // rebuild the tree from the changed PDF
+  restoreView(view); // ...and put the reviewer back where they were
+  const again = findNodeById(structTree && structTree.root, nodeId);
+  if (again) selectNode(again, { scrollTree: true });
 }
 
 function findNodeById(nodes, id) {
@@ -1044,31 +1241,55 @@ function findNodeById(nodes, id) {
 
 async function saveTagType() {
   if (!selectedNode) return;
+  const node = selectedNode;
   const newType = $("tag-type").value;
-  if (!newType || newType === selectedNode.type) return;
+  if (!newType || newType === node.type || editBusy) return;
+  setEditBusy(true);
   $("save-tag-type").disabled = true;
   $("editor-result").textContent = "Saving…";
-  const result = await api.setTagType(selected, selectedNode.id, newType);
+  const result = await api.setTagType(selected, node.id, newType);
   $("save-tag-type").disabled = false;
-  await afterEdit(result, `Changed to ${typeText(newType)}`);
+  setEditBusy(false);
+  if (!result.error) {
+    // a retag swaps one element's type: same tree, same ids -> patch in place
+    node.type = newType;
+    updateFigureRow(node);
+    showEditor(node); // the editor's own labels follow the new type
+  }
+  await afterEdit(result, `Changed to ${typeText(newType)}`, { treeUnchanged: true });
 }
 
 async function saveAlt() {
   if (!selectedNode) return;
+  const node = selectedNode;
+  const text = $("figure-alt").value.trim();
+  if (editBusy) return;
+  setEditBusy(true);
   $("save-alt").disabled = true;
   $("editor-result").textContent = "Saving…";
-  const result = await api.setFigureAlt(selected, selectedNode.id, $("figure-alt").value);
+  const result = await api.setFigureAlt(selected, node.id, $("figure-alt").value);
   $("save-alt").disabled = false;
-  await afterEdit(result, $("figure-alt").value.trim() ? "Description saved" : "Description cleared");
+  setEditBusy(false);
+  if (!result.error) {
+    // /Alt lives on the element: same tree, same ids -> patch in place
+    node.alt = text || null;
+    updateFigureRow(node);
+  }
+  await afterEdit(result, text ? "Description saved" : "Description cleared", {
+    treeUnchanged: true,
+  });
 }
 
 async function unwrapTag() {
   if (!selectedNode) return;
   const what = typeText(selectedNode.type);
+  if (editBusy) return;
+  setEditBusy(true);
   $("unwrap-tag").disabled = true;
   $("editor-result").textContent = "Saving…";
   const result = await api.unwrapTag(selected, selectedNode.id);
   $("unwrap-tag").disabled = false;
+  setEditBusy(false);
   if (result.error) {
     $("editor-result").textContent = result.error;
     return;
@@ -1089,14 +1310,17 @@ async function markDecorative() {
         "Marking it decorative removes it from the reading order, so a screen " +
         "reader will not read it out. Do that only for decoration (borders, " +
         "page numbers, background scans).\n\nTo bring it back later: Undo last " +
-        "change, or drag over it and use Tag untagged.\n\nContinue?"
+        "change, or drag over it again to tag it.\n\nContinue?"
     );
     if (!ok) return;
   }
+  if (editBusy) return;
+  setEditBusy(true);
   $("make-decorative").disabled = true;
   $("editor-result").textContent = "Saving…";
   const result = await api.makeDecorative(selected, selectedNode.id);
   $("make-decorative").disabled = false;
+  setEditBusy(false);
   // the tag is gone from the tree, so there is nothing to re-select afterwards
   selectedNode = null;
   await afterEdit(result, `${what} is now decoration (no description needed)`);
@@ -1121,9 +1345,7 @@ function updateAltWalkButton() {
   const figures = structTree && structTree.tagged ? collectFigures(structTree.root) : [];
   const need = figures.filter((f) => !f.alt).length;
   $("alt-walk").hidden = figures.length === 0;
-  $("alt-walk").textContent = need
-    ? `Image descriptions (${need} needed)…`
-    : "Image descriptions…";
+  $("alt-walk").textContent = need ? `Alt Text (${need} needed)` : "Alt Text";
 }
 
 function openAltWalk() {
@@ -1214,9 +1436,7 @@ async function saveAltWalkCurrent() {
     return false;
   }
   altWalk.savedAny = true;
-  const verdict = result.verapdf_passed
-    ? "automatic check now passes"
-    : `automatic check: ${(result.failed_clauses || []).length} issue(s) left`;
+  const verdict = verdictText(result);
   if (decorative) {
     // the element is GONE (now an artifact) and every later tag id shifted:
     // the tree must be re-read before any further edit can be trusted.
@@ -1254,23 +1474,48 @@ async function reloadAltWalkTree() {
   altWalk.at = Math.min(altWalk.at, figures.length - 1);
 }
 
-// A saved description updates its tree row in place (no full reload needed:
-// /Alt edits do not change the tree's shape, so every node id stays valid).
+// An edit to a tag's own properties (its type, its description) updates the
+// tree row and page box IN PLACE: the tree's shape is unchanged, so every node
+// id stays valid and the expensive rebuild is skipped. This is what makes
+// retagging and writing descriptions feel instant.
 function updateFigureRow(node) {
   const row = node.__row;
-  if (!row) return;
-  const text = row.querySelector(".ttext");
-  if (text && !node.text) text.textContent = node.alt || "(no description yet)";
-  const flag = row.querySelector(".tflag");
-  if (node.alt) {
-    row.classList.remove("needs-attention");
-    if (flag) flag.remove();
-  } else if (!flag) {
-    row.classList.add("needs-attention");
-    const warn = document.createElement("span");
-    warn.className = "tflag";
-    warn.textContent = "needs description";
-    row.appendChild(warn);
+  const figureLike = node.type === "Figure" || node.type === "Formula";
+  if (row) {
+    const type = row.querySelector(".ttype");
+    if (type) type.textContent = typeText(node.type);
+    const text = row.querySelector(".ttext");
+    // mirror renderTree exactly: own text, else (figures only) the description
+    // placeholder, else text borrowed from descendants. Without the last
+    // branch a retagged wrapper row (an H2 whose text sits in a child Link, an
+    // LI, a TR) would be relabelled "(no description yet)".
+    if (text) {
+      text.textContent =
+        node.text ||
+        (figureLike ? node.alt || "(no description yet)" : "") ||
+        descendantText(node);
+    }
+    row.setAttribute(
+      "aria-label",
+      typeText(node.type) + (text && text.textContent ? `: ${text.textContent}` : "")
+    );
+    const flag = row.querySelector(".tflag");
+    const needsAlt = figureLike && !node.alt;
+    if (!needsAlt) {
+      row.classList.remove("needs-attention");
+      if (flag) flag.remove();
+    } else if (!flag) {
+      row.classList.add("needs-attention");
+      const warn = document.createElement("span");
+      warn.className = "tflag";
+      warn.textContent = "needs description";
+      row.appendChild(warn);
+    }
+  }
+  if (node.__box) {
+    const tag = node.__box.querySelector(".btag");
+    if (tag) tag.textContent = node.type;
+    node.__box.title = typeText(node.type) + (node.text ? ` - ${node.text}` : "");
   }
 }
 
@@ -1302,18 +1547,26 @@ async function closeAltWalk() {
   $("alt-modal").hidden = true;
   if (refreshNeeded) {
     const file = selected;
-    await refresh(); // the queue chips + "edited" banner reflect the saves
-    if (selected === file) await loadStructure(file);
+    const view = captureView();
+    await refresh(true, { skipDetail: true }); // chips + "edited" banner
+    if (selected !== file) return;
+    const item = queue.find((q) => q.file === file);
+    if (item) renderFacts(item);
+    await loadStructure(file);
+    restoreView(view);
   }
 }
 
 async function moveTag(delta) {
   if (!selectedNode) return;
+  if (editBusy) return;
+  setEditBusy(true);
   const button = delta < 0 ? $("move-earlier") : $("move-later");
   button.disabled = true;
   $("editor-result").textContent = "Saving…";
   const result = await api.moveTag(selected, selectedNode.id, delta);
   button.disabled = false;
+  setEditBusy(false);
   if (result.moved === false) {
     $("editor-result").textContent = "Already at the " + (delta < 0 ? "start" : "end") +
       " of its group. Bigger moves are an Acrobat job.";
@@ -1338,8 +1591,39 @@ async function removeAllTags() {
   setStatus(result.error ? result.error : "Tag structure removed.");
   selectedNode = null;
   $("tag-editor").hidden = true;
-  await refresh();
-  if (selected === file) await loadStructure(file);
+  const view = captureView();
+  await refresh(true, { skipDetail: true });
+  if (selected !== file) return;
+  const item = queue.find((q) => q.file === file);
+  if (item) renderFacts(item);
+  await loadStructure(file);
+  restoreView(view);
+}
+
+async function checkNow() {
+  if (!selected) return;
+  const file = selected;
+  $("check-now").disabled = true;
+  $("check-now").textContent = "Checking…";
+  setStatus("Running the accessibility check…");
+  const result = await api.checkNow(file);
+  $("check-now").disabled = false;
+  $("check-now").textContent = "Check accessibility";
+  if (result.error) {
+    setStatus(result.error);
+    return;
+  }
+  setStatus(
+    result.verapdf_passed
+      ? "Accessibility check passed."
+      : `Accessibility check: ${(result.failed_clauses || []).length} issue(s) found.`
+  );
+  const view = captureView();
+  await refresh(true, { skipDetail: true }); // the verdict + chips, no tree reload
+  if (selected !== file) return;
+  const item = queue.find((q) => q.file === file);
+  if (item) renderFacts(item);
+  restoreView(view);
 }
 
 async function undoLast() {
@@ -1352,8 +1636,13 @@ async function undoLast() {
   setStatus(result.error ? result.error : "Last change undone.");
   selectedNode = null;
   $("tag-editor").hidden = true;
-  await refresh();
-  if (selected === file) await loadStructure(file);
+  const view = captureView();
+  await refresh(true, { skipDetail: true });
+  if (selected !== file) return;
+  const item = queue.find((q) => q.file === file);
+  if (item) renderFacts(item);
+  await loadStructure(file);
+  restoreView(view);
 }
 
 async function revertDocument() {
@@ -1364,8 +1653,11 @@ async function revertDocument() {
   const result = await api.reprocess(file);
   $("revert").disabled = false;
   setStatus(result.error ? result.error : "Reprocessed from the original document.");
-  await refresh();
-  if (selected === file) await loadStructure(file);
+  await refresh(true, { skipDetail: true });
+  if (selected !== file) return;
+  const item = queue.find((q) => q.file === file);
+  if (item) renderFacts(item);
+  await loadStructure(file); // a fresh document: the top is the right place
 }
 
 function selectNode(node, opts = {}) {
@@ -1563,9 +1855,10 @@ async function addPdfs() {
   if (!code) return; // the button is disabled without a module; belt and braces
   const result = await api.addPdfs(code);
   if (result.copied && result.copied.length) {
-    setStatus(`Added to ${code}: ${result.copied.map((r) => splitId(r)[1]).join(", ")} - ` +
-      "now press Process PDFs.");
-    await refresh(); // they appear under their module immediately
+    // no status line listing the filenames: they appear in the sidebar under
+    // their module immediately, and the Process button already counts them.
+    setStatus("");
+    await refresh();
   } else if (result.error) {
     setStatus(result.error);
   } else {
@@ -1701,6 +1994,27 @@ async function init() {
     if (e.key === "Enter") saveAlt();
   };
   tagTypes = await api.tagTypes();
+  fillTagTypes(); // the drag bar's type must be pickable BEFORE any drag
+  $("check-now").onclick = checkNow;
+  $("settings").onclick = () => ($("settings-overlay").hidden = false);
+  $("settings-close").onclick = () => ($("settings-overlay").hidden = true);
+  $("settings-overlay").onclick = (e) => {
+    if (e.target === $("settings-overlay")) $("settings-overlay").hidden = true;
+  };
+  $("auto-check-toggle").checked = autoCheck;
+  $("auto-check-toggle").onchange = async () => {
+    autoCheck = $("auto-check-toggle").checked;
+    try {
+      localStorage.setItem("speade-auto-check", autoCheck ? "1" : "0");
+    } catch (e) { /* storage unavailable: the setting holds for this session */ }
+    await api.setAutoCheck(autoCheck);
+    setStatus(
+      autoCheck
+        ? "The accessibility check will run after every change (slower)."
+        : "The accessibility check now runs only when you press Check accessibility."
+    );
+  };
+  await api.setAutoCheck(autoCheck); // the backend starts in sync with the box
   $("help").onclick = () => ($("help-overlay").hidden = false);
   $("help-close").onclick = () => ($("help-overlay").hidden = true);
   $("help-overlay").onclick = (e) => {
@@ -1709,12 +2023,11 @@ async function init() {
   $("bulk-merge").onclick = () => runBulk("merge");
   $("bulk-retag").onclick = () => runBulk("retag");
   $("bulk-deco").onclick = () => runBulk("decorative");
-  $("bulk-carve").onclick = () => runBulk("carve");
-  $("bulk-tag").onclick = () => runBulk("tagnew");
   $("bulk-clear").onclick = clearBulkSelection;
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     $("help-overlay").hidden = true;
+    $("settings-overlay").hidden = true;
     if (altWalk && !$("alt-close").disabled) closeAltWalk(); // not mid-save
     clearBulkSelection();
   });

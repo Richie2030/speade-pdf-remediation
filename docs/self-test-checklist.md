@@ -27,9 +27,9 @@ before pilot · **[edge]** = corner case, note if it fails.
 
 ## 1. Processing PDFs
 
-- [ ] **[core]** Click *Add PDFs…*, pick two. → Status "Added: …"; a "Waiting to
-  process (2)" section appears; the button reads "Process 2 PDFs"; the originals
-  are copied to the inbox, never moved.
+- [ ] **[core]** Type a module code, click *Add PDFs…*, pick two. → No status
+  text appears; the two files show under that module as waiting; the button
+  reads "Process 2 PDFs (CODE)"; the originals are copied, never moved.
 - [ ] **[imp]** Drop a PDF into the inbox folder in Explorer, press *Refresh
   list*. → It appears under "Waiting to process".
 - [ ] **[edge]** Put a `.docx` and a `.txt` in the inbox, press Process. → They
@@ -73,13 +73,32 @@ before pilot · **[edge]** = corner case, note if it fails.
   that module's `approved\` subfolder. Newest processed documents list first.
 - [ ] **[imp]** History and the CSV export show the module for module documents
   (e.g. "MG2001 / week1.pdf" in-app, a `module` column in the export).
-- [ ] **[core]** Open a document with images → an "Image descriptions…" button
+- [ ] **[core]** Edit speed + deferred check: with Settings → *Check
+  accessibility after every change* OFF (the default), a retag / description /
+  drag-tag returns in about a second, the queue chip reads "changed since the
+  last check", and the facts row says "not checked since your last change".
+  Press **Check accessibility** → the real verdict returns. Turn the setting ON
+  → the next edit is visibly slower and reports a verdict immediately.
+- [ ] **[core]** Approve a document whose check is stale → the decision still
+  runs veraPDF (nothing ships unchecked) and the recorded verdict is fresh.
+- [ ] **[core]** Scroll deep into a document, drag over untagged content → it is
+  tagged as the type in *Drag on the page to tag as* with NO button press, and
+  the view stays exactly where you were (it must not jump to page 1).
+- [ ] **[imp]** Drag across two or more existing tags → the bar still appears
+  with Merge into one / Change all / Mark all decorative.
+- [ ] **[imp]** Add PDFs → no filename list appears in the toolbar; the files
+  simply show under their module and the Process button counts them.
+- [ ] **[core]** Hover a document → **×** removes it from the list; a module
+  heading's **×** removes the whole module. Files on disk are untouched; the
+  footer says "N removed from this list" with **Show** / **Put all back**.
+- [ ] **[core]** Open a document with images → an "Alt Text" button
   appears top right (with a count of missing ones). It opens the *Set alternate
   text* stepper: "Image 1 of N", the page scrolls to each image, ◀ ▶ move
   (saving any change first), *Decorative figure* removes the image from the
   reading order (tree reloads, count shrinks), *Save &amp; Close* keeps the
-  current text, *Cancel* discards only the unsaved one. Every save re-runs the
-  automatic check and lands in History as an image-description edit.
+  current text, *Cancel* discards only the unsaved one. Every save lands in
+  History as an image-description edit (and re-runs the automatic check only
+  when that setting is on).
 
 **Skip / re-run logic:**
 
@@ -203,8 +222,9 @@ stability:
 **Single-tag edits:**
 
 - [ ] **[core]** Select a Paragraph that should be a heading, pick "Heading 2",
-  press *Change*. → "Changed to Heading 2 — automatic check…"; the tree rebuilds
-  with the same tag re-selected; the "edited" chip and banner appear.
+  press *Change*. → "Changed to Heading 2 — not checked yet…"; the row's type
+  label updates in place (no full tree rebuild, no scroll jump); the "edited"
+  chip and banner appear.
 - [ ] **[edge]** Press *Change* with the type unchanged. → Nothing happens (no
   save, no edited state).
 - [ ] **[core]** Select an undescribed Figure, type a description, press *Save
@@ -241,12 +261,11 @@ stability:
   boxes ~40%+ inside are selected (page boxes *and* tree rows highlight); the
   bar reads "N tags selected" with Merge / Change all / Mark all decorative
   enabled.
-- [ ] **[core]** Drag over some lines inside a paragraph. → Each line ~half-inside
-  gets a yellow highlight; the count includes "M lines"; "New tag from lines"
-  enables.
+- [ ] **[core]** Drag over some lines inside a paragraph. → They are carved
+  into a new tag of the type in *Drag on the page to tag as* IMMEDIATELY, with
+  no button press.
 - [ ] **[core]** Drag over untagged content (a decorated or missed region). →
-  Dashed-red highlights; count includes "K untagged"; only "Tag untagged"
-  enables.
+  It is tagged as the chosen type immediately, again with no button press.
 - [ ] **[imp]** Drag tightly around exactly one whole tag. → No bulk bar; the
   ordinary editor opens for that tag.
 - [ ] **[edge]** Start a drag on one page, move onto the next. → The rectangle
@@ -258,21 +277,24 @@ stability:
   type in one step; one undo covers the batch.
 - [ ] **[core]** Select tags including text → *Mark all decorative*. → Confirm
   states how many contain text; OK removes them all; one undo step.
-- [ ] **[core]** Drag the first line of a paragraph (a swallowed heading) → *New
-  tag from lines* as Heading 2. → The line becomes a new H2 placed *before* the
+- [ ] **[core]** Choose Heading 2, then drag the first line of a paragraph (a
+  swallowed heading). → The line becomes a new H2 placed *before* the
   paragraph; a donor emptied of all lines disappears; one undo restores.
-- [ ] **[core]** Drag untagged content → *Tag untagged*. → It gains a box, a
+- [ ] **[core]** Choose Paragraph, drag untagged content. → It gains a box, a
   chip, and a tree row in reading order; on a fully untagged document this
   creates the first tag (so *Remove all tags* is reversible by hand).
-- [ ] **[edge]** *Tag untagged* on a stale selection / an unusual page. → It
-  refuses cleanly with a message ("…reload and try again" / "…tag it in
+- [ ] **[edge]** Drag untagged content on a stale selection / an unusual page.
+  → It refuses cleanly with a message ("…reload and try again" / "…tag it in
   Acrobat") and changes nothing.
 
 **Undo and re-check:**
 
-- [ ] **[core]** After any edit, read the result line and the queue chip. →
-  veraPDF re-ran: "automatic check now passes" / "…N issue(s) left"; the queue
-  chip updates; issues are listed as "code – plain meaning".
+- [ ] **[core]** After any edit (check off), read the result line and the queue
+  chip. → "not checked yet (press Check accessibility…)" and the chip reads
+  "changed since the last check". Press *Check accessibility* → veraPDF runs:
+  "automatic check now passes" / "…N issue(s) left", issues listed as
+  "code – plain meaning". With the Settings toggle ON, the verdict appears
+  immediately after each edit instead.
 - [ ] **[core]** Make three edits, press *Undo last change* repeatedly. → The
   button reads "(3 available)"; each press steps back one edit; after the last,
   the button hides and the "edited" state clears.

@@ -15,9 +15,11 @@ which is exactly what the JS bridge will need.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sys
+import threading
 import time
 from collections.abc import Callable
 from contextlib import contextmanager, suppress
@@ -123,6 +125,10 @@ class QueueItem(BaseModel):
     flags: list[str] = Field(default_factory=list)
     verapdf_passed: bool | None = None
     verapdf_failed_clauses: list[str] = Field(default_factory=list)
+    # the document has been edited since that verdict was measured (the
+    # reviewer has the automatic check switched off) -- the UI must not
+    # present the old verdict as current.
+    verapdf_stale: bool = False
     status: str = "draft"  # draft / approved / rejected
     reviewer: str | None = None
     # do the bytes on disk still match the recorded fingerprint? None = no file /
@@ -273,6 +279,7 @@ def _score_draft(ws: Workspace, sidecar: Sidecar, module: str | None = None) -> 
     vera = verapdf.validate(out_pdf, ws.verapdf_profile, cli=ws.verapdf_cli)
     sidecar.verapdf_passed = vera.passed
     sidecar.verapdf_failed_clauses = vera.failed_clauses
+    sidecar.verapdf_stale = False  # freshly measured on the bytes just written
     _side_path(ws, module, name).write_text(sidecar.model_dump_json(), encoding="utf-8")
     return sidecar
 
@@ -482,6 +489,7 @@ def list_queue(config_path: Path = DEFAULT_CONFIG_PATH) -> list[QueueItem]:
                     flags=sidecar.flags,
                     verapdf_passed=sidecar.verapdf_passed,
                     verapdf_failed_clauses=sidecar.verapdf_failed_clauses,
+                    verapdf_stale=sidecar.verapdf_stale,
                     status=sidecar.approval.status.value,
                     reviewer=sidecar.approval.reviewer,
                     output_changed=changed,
@@ -523,18 +531,19 @@ def set_doc_metadata(
 
     ws = workspace(config_path)
     title, lang = title.strip(), lang.strip()
-    tmp = pdf.with_name(pdf.name + ".meta.tmp")
-    with pikepdf.open(pdf) as doc:
-        if lang:
-            doc.Root.Lang = pikepdf.String(lang)
-        if doc.Root.get("/ViewerPreferences") is None:
-            doc.Root.ViewerPreferences = pikepdf.Dictionary()
-        doc.Root.ViewerPreferences.DisplayDocTitle = True  # 7.1-10: show title, not filename
-        if title:
-            with doc.open_metadata() as meta:
-                meta["dc:title"] = title
-        doc.save(tmp)
-    tmp.replace(pdf)
+    tmp = pdf.with_name(f"{pdf.name}.{os.getpid()}.meta.tmp")
+    with _EDIT_LOCK:  # another whole-file read-modify-write: never concurrent
+        with pikepdf.open(pdf) as doc:
+            if lang:
+                doc.Root.Lang = pikepdf.String(lang)
+            if doc.Root.get("/ViewerPreferences") is None:
+                doc.Root.ViewerPreferences = pikepdf.Dictionary()
+            doc.Root.ViewerPreferences.DisplayDocTitle = True  # 7.1-10: title, not filename
+            if title:
+                with doc.open_metadata() as meta:
+                    meta["dc:title"] = title
+            doc.save(tmp)
+        tmp.replace(pdf)
 
     new_sha = sha256_file(pdf)
     module = _module_of(ws, pdf)
@@ -543,6 +552,10 @@ def set_doc_metadata(
         try:
             sidecar = Sidecar.model_validate_json(side_path.read_text(encoding="utf-8"))
             sidecar.output_sha256 = new_sha
+            # title and language are themselves UA-1 clauses (7.1-9, 7.2): the
+            # bytes just changed, so the recorded verdict no longer describes
+            # this file. This step never ran veraPDF; now it says so.
+            sidecar.verapdf_stale = True
             side_path.write_text(sidecar.model_dump_json(indent=2), encoding="utf-8", newline="\n")
         except Exception:  # a mangled sidecar: the metadata edit itself still stands
             pass
@@ -647,18 +660,31 @@ def _snapshot(ws: Workspace, pdf: Path) -> Path | None:
         return None
 
 
+# Every in-app edit is a read-modify-write of the whole PDF (open with pikepdf,
+# mutate, save to a staging file, atomic replace). Two of them running at once
+# LOSE ONE: the second opened the pre-first bytes, so its save silently drops
+# the first edit -- while the audit log, already appended, claims both landed.
+# Both clients dispatch concurrently (pywebview runs each bridge call on its own
+# thread; every web endpoint is a sync def, so Starlette uses its threadpool),
+# and a drag now applies on release, so a second gesture during a save is easy.
+# One process-wide lock serialises the mutation window; it is held for well
+# under a second and never around veraPDF.
+_EDIT_LOCK = threading.RLock()
+
+
 @contextmanager
 def _edit_guard(ws: Workspace, pdf: Path):
-    """Snapshot for undo, and DISCARD that snapshot if the edit fails -- a
-    refused edit must not leave a no-op step in the undo history."""
-    snapshot = _snapshot(ws, pdf)
-    try:
-        yield
-    except BaseException:
-        if snapshot is not None:
-            with suppress(OSError):
-                snapshot.unlink(missing_ok=True)
-        raise
+    """Serialise the edit, snapshot for undo, and DISCARD that snapshot if the
+    edit fails -- a refused edit must not leave a no-op step in the history."""
+    with _EDIT_LOCK:
+        snapshot = _snapshot(ws, pdf)
+        try:
+            yield
+        except BaseException:
+            if snapshot is not None:
+                with suppress(OSError):
+                    snapshot.unlink(missing_ok=True)
+            raise
 
 
 def clear_undo(ws: Workspace, module: str | None, name: str) -> None:
@@ -669,38 +695,54 @@ def clear_undo(ws: Workspace, module: str | None, name: str) -> None:
             snapshot.unlink(missing_ok=True)
 
 
-def undo_last_edit(pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
+def undo_last_edit(
+    pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH, check: bool = True
+) -> dict[str, Any]:
     """Restore the document to the state before the most recent edit (one step).
     Raises LookupError when there is nothing left to undo."""
     ws = workspace(config_path)
     module = _module_of(ws, pdf)
-    snapshots = _undo_snapshots(ws, module, pdf.name)
-    if not snapshots:
-        raise LookupError("nothing to undo for this document")
-    latest = snapshots[-1]
-    tmp = pdf.with_name(pdf.name + ".undoing")
-    shutil.copy2(latest, tmp)
-    tmp.replace(pdf)
-    with suppress(OSError):
-        latest.unlink(missing_ok=True)
-    result = _after_edit(ws, pdf, {"event": "edit-undo"})
+    with _EDIT_LOCK:  # same read-modify-write window as any other edit
+        snapshots = _undo_snapshots(ws, module, pdf.name)
+        if not snapshots:
+            raise LookupError("nothing to undo for this document")
+        latest = snapshots[-1]
+        tmp = pdf.with_name(f"{pdf.name}.{os.getpid()}.undoing")
+        shutil.copy2(latest, tmp)
+        tmp.replace(pdf)
+        with suppress(OSError):
+            latest.unlink(missing_ok=True)
+    result = _after_edit(ws, pdf, {"event": "edit-undo"}, check=check)
     result["undo_depth"] = len(_undo_snapshots(ws, module, pdf.name))
     return result
 
 
-def _after_edit(ws: Workspace, pdf: Path, event: dict[str, Any]) -> dict[str, Any]:
-    """Shared tail for every in-app edit: re-score the changed document so the
-    reviewer sees the effect immediately, persist that verdict, and record the
-    edit in the audit trail. `output_sha256` is deliberately NOT updated -- the
+def _after_edit(
+    ws: Workspace, pdf: Path, event: dict[str, Any], check: bool = True
+) -> dict[str, Any]:
+    """Shared tail for every in-app edit: record it in the audit trail and --
+    when `check` is on -- re-score the changed document so the reviewer sees
+    the effect immediately. `output_sha256` is deliberately NOT updated: the
     document now differs from what the pipeline produced ("edited since
-    processing"), and the approval step is what re-pins the shipped bytes."""
+    processing"), and the approval step is what re-pins the shipped bytes.
+
+    veraPDF is a Java subprocess costing seconds per run, which is punishing
+    when a reviewer writes twenty alt texts in a row. With `check` off the
+    edit still lands (and is still audited and undoable); only the scoring is
+    deferred to check_now() or to the gate, and the sidecar is marked stale so
+    no UI can show a verdict that predates the edit.
+    """
     module = _module_of(ws, pdf)
     side_path = _side_path(ws, module, pdf.name)
-    vera = verapdf.validate(pdf, ws.verapdf_profile, cli=ws.verapdf_cli)
+    vera = verapdf.validate(pdf, ws.verapdf_profile, cli=ws.verapdf_cli) if check else None
     if side_path.is_file():
         sidecar = Sidecar.model_validate_json(side_path.read_text(encoding="utf-8"))
-        sidecar.verapdf_passed = vera.passed
-        sidecar.verapdf_failed_clauses = vera.failed_clauses
+        if vera is not None:
+            sidecar.verapdf_passed = vera.passed
+            sidecar.verapdf_failed_clauses = vera.failed_clauses
+            sidecar.verapdf_stale = False
+        else:
+            sidecar.verapdf_stale = True
         side_path.write_text(sidecar.model_dump_json(), encoding="utf-8")
     append_event(
         ws.audit_log,
@@ -713,14 +755,49 @@ def _after_edit(ws: Workspace, pdf: Path, event: dict[str, Any]) -> dict[str, An
     )
     return {
         "ok": True,
-        "verapdf_passed": vera.passed,
-        "failed_clauses": vera.failed_clauses,
+        "verapdf_passed": vera.passed if vera is not None else None,
+        "failed_clauses": vera.failed_clauses if vera is not None else [],
+        "checked": vera is not None,
         **event,
     }
 
 
+def check_now(pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
+    """Run the veraPDF gate on demand and persist the verdict -- the button
+    behind a deferred (auto-check off) editing session. Read-only with respect
+    to the document itself: it measures, it never edits."""
+    ws = workspace(config_path)
+    module = _module_of(ws, pdf)
+    # veraPDF takes seconds and the UI stays live, so the reviewer can edit
+    # WHILE it runs. Fingerprint the bytes being measured: if they changed by
+    # the time the verdict lands, it describes a file that no longer exists --
+    # record it but leave the document marked stale rather than resurrecting a
+    # verdict for superseded bytes.
+    measured = sha256_file(pdf)
+    vera = verapdf.validate(pdf, ws.verapdf_profile, cli=ws.verapdf_cli)
+    superseded = sha256_file(pdf) != measured
+    side_path = _side_path(ws, module, pdf.name)
+    if side_path.is_file():
+        sidecar = Sidecar.model_validate_json(side_path.read_text(encoding="utf-8"))
+        sidecar.verapdf_passed = vera.passed
+        sidecar.verapdf_failed_clauses = vera.failed_clauses
+        sidecar.verapdf_stale = superseded
+        side_path.write_text(sidecar.model_dump_json(), encoding="utf-8")
+    return {
+        "ok": True,
+        "checked": True,
+        "verapdf_passed": vera.passed,
+        "failed_clauses": vera.failed_clauses,
+        "superseded": superseded,
+    }
+
+
 def set_tag_type(
-    pdf: Path, node_id: int, new_type: str, config_path: Path = DEFAULT_CONFIG_PATH
+    pdf: Path,
+    node_id: int,
+    new_type: str,
+    config_path: Path = DEFAULT_CONFIG_PATH,
+    check: bool = True,
 ) -> dict[str, Any]:
     """Retag one element (e.g. a Paragraph the engine should have made a
     Heading 2). Raises ValueError for a type outside EDITABLE_TAG_TYPES."""
@@ -734,12 +811,19 @@ def set_tag_type(
     with _edit_guard(ws, pdf):
         old_type = structure.edit_element(pdf, node_id, mutate)
     return _after_edit(
-        ws, pdf, {"event": "edit-tag", "node": node_id, "from": old_type, "to": new_type}
+        ws,
+        pdf,
+        {"event": "edit-tag", "node": node_id, "from": old_type, "to": new_type},
+        check=check,
     )
 
 
 def set_figure_alt(
-    pdf: Path, node_id: int, alt: str, config_path: Path = DEFAULT_CONFIG_PATH
+    pdf: Path,
+    node_id: int,
+    alt: str,
+    config_path: Path = DEFAULT_CONFIG_PATH,
+    check: bool = True,
 ) -> dict[str, Any]:
     """Write the human-authored description (/Alt) onto one element -- the
     alt-text step that is never machine-generated. An empty string clears it."""
@@ -758,11 +842,12 @@ def set_figure_alt(
         ws,
         pdf,
         {"event": "edit-alt", "node": node_id, "tag": kind, "described": bool(text)},
+        check=check,
     )
 
 
 def make_decorative(
-    pdf: Path, node_id: int, config_path: Path = DEFAULT_CONFIG_PATH
+    pdf: Path, node_id: int, config_path: Path = DEFAULT_CONFIG_PATH, check: bool = True
 ) -> dict[str, Any]:
     """Mark one element as decoration: out of the reading order, its content
     re-marked as an artifact. This is the "decorative image needs no
@@ -780,11 +865,16 @@ def make_decorative(
             "was": result["was"],
             "artifacts": result["artifacts"],
         },
+        check=check,
     )
 
 
 def move_tag(
-    pdf: Path, node_id: int, delta: int, config_path: Path = DEFAULT_CONFIG_PATH
+    pdf: Path,
+    node_id: int,
+    delta: int,
+    config_path: Path = DEFAULT_CONFIG_PATH,
+    check: bool = True,
 ) -> dict[str, Any]:
     """Move one tag earlier/later among its siblings. Reading order is tree
     order, so this is the in-app reading-order fix."""
@@ -804,6 +894,7 @@ def move_tag(
         ws,
         pdf,
         {"event": "edit-order", "node": node_id, "direction": "earlier" if delta < 0 else "later"},
+        check=check,
     )
 
 
@@ -813,6 +904,7 @@ def bulk_edit(
     node_ids: list[int],
     new_type: str | None = None,
     config_path: Path = DEFAULT_CONFIG_PATH,
+    check: bool = True,
 ) -> dict[str, Any]:
     """One drag-selection's worth of edits as a SINGLE operation: one undo
     snapshot, one atomic save, one veraPDF re-check, one audit event.
@@ -843,6 +935,7 @@ def bulk_edit(
         ws,
         pdf,
         {"event": "edit-bulk", "action": action, "count": len(ids), "type": new_type},
+        check=check,
     )
     out.update(result)
     return out
@@ -853,6 +946,7 @@ def carve_tag(
     picks: list[dict],
     new_type: str,
     config_path: Path = DEFAULT_CONFIG_PATH,
+    check: bool = True,
 ) -> dict[str, Any]:
     """Carve selected LINES out of their tags into one new tag of `new_type`
     (each pick = {"node_id", "mcid"}) -- the drag tool's finer grain, for a
@@ -869,6 +963,7 @@ def carve_tag(
         ws,
         pdf,
         {"event": "edit-carve", "lines": result["carved"], "type": new_type},
+        check=check,
     )
     out.update(result)
     return out
@@ -880,6 +975,7 @@ def tag_untagged(
     object_indexes: list[int],
     new_type: str,
     config_path: Path = DEFAULT_CONFIG_PATH,
+    check: bool = True,
 ) -> dict[str, Any]:
     """Wrap untagged drawn content (engine-missed text, or content previously
     marked decorative) in one brand-new tag of `new_type`. One snapshot, one
@@ -893,22 +989,29 @@ def tag_untagged(
         ws,
         pdf,
         {"event": "edit-tag-new", "pieces": result["tagged"], "type": new_type},
+        check=check,
     )
     out.update(result)
     return out
 
 
-def remove_all_tags(pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
+def remove_all_tags(
+    pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH, check: bool = True
+) -> dict[str, Any]:
     """Strip the entire tag structure (the start-over escape hatch). The
     document stays visually identical and can be reprocessed or tagged from
     scratch in Acrobat."""
     ws = workspace(config_path)
     with _edit_guard(ws, pdf):
         result = structure.remove_all_tags(pdf)
-    return _after_edit(ws, pdf, {"event": "edit-remove-tags", "had_tags": result["had_tags"]})
+    return _after_edit(
+        ws, pdf, {"event": "edit-remove-tags", "had_tags": result["had_tags"]}, check=check
+    )
 
 
-def unwrap_tag(pdf: Path, node_id: int, config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
+def unwrap_tag(
+    pdf: Path, node_id: int, config_path: Path = DEFAULT_CONFIG_PATH, check: bool = True
+) -> dict[str, Any]:
     """Remove one tag but KEEP its contents in the reading order -- the fix for a
     wrapper the engine invented (paragraphs bundled into a bogus List). Raises
     ValueError when the element holds content directly, since deleting that tag
@@ -925,6 +1028,7 @@ def unwrap_tag(pdf: Path, node_id: int, config_path: Path = DEFAULT_CONFIG_PATH)
             "was": result["was"],
             "promoted": result["promoted"],
         },
+        check=check,
     )
 
 
@@ -1055,6 +1159,8 @@ def decide(
     vera = verapdf.validate(pdf, ws.verapdf_profile, cli=ws.verapdf_cli)
     sidecar.verapdf_passed = vera.passed
     sidecar.verapdf_failed_clauses = vera.failed_clauses
+    # the gate always measures the real bytes, whatever the auto-check setting
+    sidecar.verapdf_stale = False
 
     status = ApprovalStatus.APPROVED if approve else ApprovalStatus.REJECTED
     clear_undo(ws, module, pdf.name)  # the decision closes this editing session

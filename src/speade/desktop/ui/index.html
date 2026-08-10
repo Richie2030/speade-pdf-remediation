@@ -27,6 +27,7 @@
     <button id="open-inbox">Open input folder</button>
     <button id="open-outbox">Open output folder</button>
     <button id="history">History</button>
+    <button id="settings">Settings</button>
     <button id="help">Help</button>
     <div id="progress-wrap" hidden>
       <progress id="progress" max="1" value="0"></progress>
@@ -54,7 +55,8 @@
         <div class="detail-head">
           <h2 id="doc-name"></h2>
           <div class="head-actions">
-            <button id="alt-walk" hidden title="Step through every image in the document and write its description, like Acrobat's Set Alternate Text">Image descriptions&hellip;</button>
+            <button id="alt-walk" hidden title="Step through every image in the document and write its description, like Acrobat's Set Alternate Text">Alt Text</button>
+            <button id="check-now" class="primary" title="Run the accessibility check on this document now (it does not run after every change)">Check accessibility</button>
             <button id="undo-last" hidden>Undo last change</button>
             <button id="remove-tags" title="Delete the whole tag structure so the document can be tagged from scratch in Acrobat">Remove all tags</button>
             <button id="revert" hidden>Undo all edits (reprocess)</button>
@@ -78,15 +80,19 @@
             <div id="tag-tree" aria-label="Tag structure, click a tag to see it on the page"></div>
           </div>
           <div id="page-side">
-            <div id="bulk-bar" hidden>
-              <span id="bulk-count"></span>
-              <select id="bulk-type" title="The tag type for Merge and Change all"></select>
-              <button id="bulk-merge" title="The selected tags become ONE tag of the chosen type, contents kept in reading order">Merge into one</button>
-              <button id="bulk-retag" title="Every selected tag becomes the chosen type">Change all</button>
-              <button id="bulk-deco" title="Every selected tag leaves the reading order (no description needed)">Mark all decorative</button>
-              <button id="bulk-carve" title="The selected lines leave their current tags and become one NEW tag of the chosen type - e.g. a heading the app swallowed into a paragraph">New tag from lines</button>
-              <button id="bulk-tag" title="Give the selected UNTAGGED content (dashed red) a brand-new tag of the chosen type - for text the app missed, or content that was marked decorative">Tag untagged</button>
-              <button id="bulk-clear">Clear</button>
+            <!-- Always visible: pick the type FIRST, then drag. A drag over
+                 untagged content or part of a tag's lines applies it straight
+                 away; dragging across whole tags still asks what to do. -->
+            <div id="bulk-bar">
+              <label id="drag-type-wrap" for="bulk-type">Drag on the page to tag as</label>
+              <select id="bulk-type" title="Dragging over content tags it as this type"></select>
+              <span id="bulk-count" class="muted-on-navy">drag over anything the app missed</span>
+              <span id="bulk-actions" hidden>
+                <button id="bulk-merge" title="The selected tags become ONE tag of the chosen type, contents kept in reading order">Merge into one</button>
+                <button id="bulk-retag" title="Every selected tag becomes the chosen type">Change all</button>
+                <button id="bulk-deco" title="Every selected tag leaves the reading order (no description needed)">Mark all decorative</button>
+                <button id="bulk-clear">Clear</button>
+              </span>
             </div>
             <div id="page-scroll">
               <div id="page-stack"></div>
@@ -225,6 +231,28 @@
     </div>
   </div>
 
+  <div id="settings-overlay" hidden>
+    <div id="settings-modal" role="dialog" aria-modal="true" aria-label="Settings">
+      <div class="help-head">
+        <h2>Settings</h2>
+        <button id="settings-close" aria-label="Close settings">&times;</button>
+      </div>
+      <div class="help-body">
+        <label class="setting-row">
+          <input type="checkbox" id="auto-check-toggle">
+          <span>
+            <b>Check accessibility after every change</b><br>
+            <span class="muted">Off by default: the check takes a few seconds each
+            time, which is slow when you are writing several descriptions in a
+            row. With it off, use <b>Check accessibility</b> when you want the
+            result. Your decision at the end always runs the check either way, so
+            nothing ships unchecked.</span>
+          </span>
+        </label>
+      </div>
+    </div>
+  </div>
+
   <div id="help-overlay" hidden>
     <div id="help-modal" role="dialog" aria-modal="true" aria-label="Help">
       <div class="help-head">
@@ -273,23 +301,25 @@
           <li><b>One tag</b> - click it (tree or page box): change its type, write
             an image description, mark it decorative, remove a wrapper, or move it
             earlier/later in the reading order.</li>
-          <li><b>All images in one pass</b> - <i>Image descriptions&hellip;</i>
-            (top right) opens a stepper like Acrobat's <i>Set Alternate Text</i>:
-            it walks image by image, you write a description (or tick
-            <i>Decorative figure</i>), and the arrows save as they move.</li>
-          <li><b>Many tags</b> - <b>drag a rectangle on a page</b>, like Acrobat.
-            The bar that appears can <i>merge them into one tag</i> (the fix for
-            over-fragmented text), <i>change all</i>, or <i>mark all decorative</i>.</li>
-          <li><b>Part of a tag</b> - drag over just some of its lines and
-            <i>New tag from lines</i> carves them out into their own tag - the
-            fix for a heading swallowed into the top of a paragraph.</li>
-          <li><b>Untagged content</b> - anything with no box at all (missed
-            text, or something marked decorative) shows a dashed red highlight
-            when you drag over it; <i>Tag untagged</i> gives it a brand-new
-            tag. Decorative is therefore reversible.</li>
+          <li><b>All images in one pass</b> - <i>Alt Text</i> (top right) opens
+            a stepper like Acrobat's <i>Set Alternate Text</i>: it walks image by
+            image, you write a description (or tick <i>Decorative figure</i>),
+            and the arrows save as they move.</li>
+          <li><b>Tag something new</b> - pick a type in <i>Drag on the page to
+            tag as</i> (above the pages), then <b>drag a rectangle</b> over it.
+            Content with no tag at all, or some of a tag's lines (the fix for a
+            heading swallowed into a paragraph), is tagged straight away - no
+            button to press. This is also how you bring back anything marked
+            decorative.</li>
+          <li><b>Many tags at once</b> - drag across two or more existing tags
+            and a bar appears, because there is a real choice: <i>merge them
+            into one tag</i> (the fix for over-fragmented text), <i>change
+            all</i>, or <i>mark all decorative</i>.</li>
           <li><b>Undo</b> - <i>Undo last change</i> steps back one edit at a time;
-            <i>Undo all edits</i> starts over from the original. Every edit re-runs
-            the automatic check and is recorded in History.</li>
+            <i>Undo all edits</i> starts over from the original. Every edit is
+            recorded in History; the accessibility check runs when you press
+            <i>Check accessibility</i> (or automatically, if you switch that on
+            in Settings) - and always when you Approve or Reject.</li>
           <li>Still Acrobat's job: selecting part of a single line and table
             header cells.</li>
         </ul>
@@ -315,6 +345,17 @@
           <dt>What is the "automatic check"?</dt>
           <dd>veraPDF, the official PDF/UA accessibility validator. Its verdict is
             advice - your Approve/Reject is the decision, and it is recorded.</dd>
+          <dt>Why does it say "not checked since your last change"?</dt>
+          <dd>The check takes a few seconds, so it does not run after every edit -
+            that would make writing several descriptions painfully slow. Press
+            <b>Check accessibility</b> whenever you want the current result, and
+            note that <b>Approve/Reject always runs it</b>, so nothing can ship
+            unchecked. You can switch it back to running after every change in
+            <b>Settings</b>.</dd>
+          <dt>How do I clear finished documents out of the list?</dt>
+          <dd>Hover a document (or a module heading) and click the <b>&times;</b>.
+            That only tidies the list - every file stays exactly where it is, and
+            <b>Put all back</b> at the bottom of the list restores them.</dd>
           <dt>Who writes the image descriptions?</dt>
           <dd>You do - select the image and type it below the pages (or in
             Acrobat). Descriptions are never machine-written. That's deliberate:

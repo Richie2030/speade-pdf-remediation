@@ -16,6 +16,8 @@ Read-only: this module never modifies a PDF.
 from __future__ import annotations
 
 import ctypes
+import os
+import uuid
 from collections import Counter
 from contextlib import suppress
 from pathlib import Path
@@ -452,7 +454,7 @@ def edit_element(pdf: Path, node_id: int, mutate) -> str:
     """
     import pikepdf
 
-    tmp = pdf.with_name(pdf.name + ".editing")
+    tmp = _staging_path(pdf)
     with pikepdf.open(pdf) as doc:
         target = None
         for eid, element in _walk_elements(doc, pikepdf):
@@ -468,9 +470,18 @@ def edit_element(pdf: Path, node_id: int, mutate) -> str:
     return was
 
 
+def _staging_path(pdf: Path) -> Path:
+    """A PRIVATE staging name for an atomic save. Unique per call: a fixed
+    `<name>.editing` is shared state, so two saves of the same document (the
+    desktop window and the localhost web app open at once) could consume each
+    other's half-written file. service serialises edits within one process;
+    this closes the cross-process case too."""
+    return pdf.with_name(f"{pdf.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.editing")
+
+
 def _save_over(doc, pdf: Path) -> None:
     """Atomic in-place save: temp file, then replace (never a half-written PDF)."""
-    tmp = pdf.with_name(pdf.name + ".editing")
+    tmp = _staging_path(pdf)
     doc.save(tmp)
     doc.close()
     tmp.replace(pdf)

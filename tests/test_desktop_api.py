@@ -156,6 +156,41 @@ def test_module_round_trip_through_the_bridge(tmp_path):
     assert (tmp_path / "outbox" / "MG2001" / "approved" / "a.pdf").is_file()
 
 
+def test_auto_check_setting_drives_whether_edits_score(tmp_path, monkeypatch):
+    # the Settings toggle: off (the default) means no veraPDF per edit, which
+    # is the whole point -- the reviewer runs check_now when they are ready.
+    api = _api(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+    api.run_batch()
+    seen = []
+    monkeypatch.setattr(service.structure, "edit_element", lambda pdf, node_id, mutate: "Figure")
+    monkeypatch.setattr(
+        service.verapdf,
+        "validate",
+        lambda pdf, profile="ua1", cli=None: (
+            seen.append(pdf) or VeraResult(passed=True, profile=profile)
+        ),
+    )
+
+    assert api.auto_check() is False  # default: fast
+    api.set_figure_alt("a.pdf", 3, "a chart")
+    assert seen == []  # deferred
+
+    checked = api.check_now("a.pdf")
+    json.dumps(checked)  # the bridge contract
+    assert checked["verapdf_passed"] is True
+    assert len(seen) == 1
+
+    assert api.set_auto_check(True) == {"auto_check": True}
+    api.set_figure_alt("a.pdf", 3, "another chart")
+    assert len(seen) == 2  # on: scored again straight away
+
+
+def test_check_now_on_a_missing_document_is_an_error_not_a_crash(tmp_path):
+    api = _api(tmp_path)
+    assert "error" in api.check_now("nope.pdf")
+
+
 def test_malformed_ids_are_errors_not_crashes(tmp_path):
     api = _api(tmp_path)
     assert "error" in api.load_pdf("../../etc/passwd.pdf")

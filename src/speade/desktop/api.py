@@ -48,6 +48,11 @@ class SpeadeApi:
         self._batch_thread: threading.Thread | None = None  # joined by shutdown()
         self._renderer_lock = threading.Lock()
         self._page_renderer = None  # lazy: speade.render_worker.PageRenderer
+        # veraPDF is a Java subprocess costing seconds; running it after EVERY
+        # edit makes a twenty-alt-text session crawl. Off by default: edits are
+        # instant, and the reviewer runs check_now (or simply decides, which
+        # always re-checks) when they want the verdict. The UI owns the setting.
+        self._auto_check = False
 
     def attach_window(self, window) -> None:
         self._window = window
@@ -85,6 +90,26 @@ class SpeadeApi:
     def modules(self) -> list[str]:
         """Every module folder in the workspace -- the module box's suggestions."""
         return service.list_modules(self._config_path)
+
+    def auto_check(self) -> bool:
+        """Is the accessibility check running after every edit?"""
+        return self._auto_check
+
+    def set_auto_check(self, on: bool) -> dict:
+        """Turn the after-every-edit check on/off (the Settings toggle)."""
+        self._auto_check = bool(on)
+        return {"auto_check": self._auto_check}
+
+    def check_now(self, file: str) -> dict:
+        """Run the accessibility check on demand -- the button that replaces
+        checking after every single edit."""
+        pdf = self._resolve(file)
+        if pdf is None:
+            return {"error": f"not found: {Path(file).name}"}
+        try:
+            return service.check_now(pdf, self._config_path)
+        except Exception as exc:
+            return {"error": f"could not run the check: {str(exc)[:120]}"}
 
     def load_pdf(self, file: str) -> dict:
         """The outbox draft as a data: URI for the embedded preview pane."""
@@ -280,7 +305,9 @@ class SpeadeApi:
         if pdf is None:
             return {"error": f"not found: {Path(file).name}"}
         try:
-            return service.set_tag_type(pdf, int(node_id), new_type, self._config_path)
+            return service.set_tag_type(
+                pdf, int(node_id), new_type, self._config_path, check=self._auto_check
+            )
         except (ValueError, LookupError) as exc:
             return {"error": str(exc)}
         except Exception as exc:  # a broken file must not kill the UI
@@ -292,7 +319,9 @@ class SpeadeApi:
         if pdf is None:
             return {"error": f"not found: {Path(file).name}"}
         try:
-            return service.set_figure_alt(pdf, int(node_id), alt, self._config_path)
+            return service.set_figure_alt(
+                pdf, int(node_id), alt, self._config_path, check=self._auto_check
+            )
         except LookupError as exc:
             return {"error": str(exc)}
         except Exception as exc:
@@ -305,7 +334,9 @@ class SpeadeApi:
         if pdf is None:
             return {"error": f"not found: {Path(file).name}"}
         try:
-            return service.make_decorative(pdf, int(node_id), self._config_path)
+            return service.make_decorative(
+                pdf, int(node_id), self._config_path, check=self._auto_check
+            )
         except LookupError as exc:
             return {"error": str(exc)}
         except Exception as exc:
@@ -317,7 +348,9 @@ class SpeadeApi:
         if pdf is None:
             return {"error": f"not found: {Path(file).name}"}
         try:
-            return service.move_tag(pdf, int(node_id), int(delta), self._config_path)
+            return service.move_tag(
+                pdf, int(node_id), int(delta), self._config_path, check=self._auto_check
+            )
         except (ValueError, LookupError) as exc:
             return {"error": str(exc)}
         except Exception as exc:
@@ -331,7 +364,9 @@ class SpeadeApi:
         if pdf is None:
             return {"error": f"not found: {Path(file).name}"}
         try:
-            return service.bulk_edit(pdf, action, list(node_ids), new_type, self._config_path)
+            return service.bulk_edit(
+                pdf, action, list(node_ids), new_type, self._config_path, check=self._auto_check
+            )
         except (ValueError, LookupError) as exc:
             return {"error": str(exc)}
         except Exception as exc:
@@ -343,7 +378,9 @@ class SpeadeApi:
         if pdf is None:
             return {"error": f"not found: {Path(file).name}"}
         try:
-            return service.carve_tag(pdf, list(picks), new_type, self._config_path)
+            return service.carve_tag(
+                pdf, list(picks), new_type, self._config_path, check=self._auto_check
+            )
         except (ValueError, LookupError) as exc:
             return {"error": str(exc)}
         except Exception as exc:
@@ -355,7 +392,9 @@ class SpeadeApi:
         if pdf is None:
             return {"error": f"not found: {Path(file).name}"}
         try:
-            return service.tag_untagged(pdf, int(page), list(indexes), new_type, self._config_path)
+            return service.tag_untagged(
+                pdf, int(page), list(indexes), new_type, self._config_path, check=self._auto_check
+            )
         except (ValueError, LookupError) as exc:
             return {"error": str(exc)}
         except Exception as exc:
@@ -367,7 +406,7 @@ class SpeadeApi:
         if pdf is None:
             return {"error": f"not found: {Path(file).name}"}
         try:
-            return service.unwrap_tag(pdf, int(node_id), self._config_path)
+            return service.unwrap_tag(pdf, int(node_id), self._config_path, check=self._auto_check)
         except (ValueError, LookupError) as exc:
             return {"error": str(exc)}
         except Exception as exc:
@@ -379,7 +418,7 @@ class SpeadeApi:
         if pdf is None:
             return {"error": f"not found: {Path(file).name}"}
         try:
-            return service.undo_last_edit(pdf, self._config_path)
+            return service.undo_last_edit(pdf, self._config_path, check=self._auto_check)
         except LookupError as exc:
             return {"error": str(exc)}
         except Exception as exc:
@@ -391,7 +430,7 @@ class SpeadeApi:
         if pdf is None:
             return {"error": f"not found: {Path(file).name}"}
         try:
-            return service.remove_all_tags(pdf, self._config_path)
+            return service.remove_all_tags(pdf, self._config_path, check=self._auto_check)
         except Exception as exc:
             return {"error": f"could not remove the tags: {str(exc)[:120]}"}
 

@@ -122,12 +122,14 @@ web copy calls `fetch`. Never fork the UI — one `ui/`, two launchers.
 ## In-app editing (what the reviewer can fix without Acrobat)
 
 All of it is implemented in `validation/structure.py`, routed through
-`service.py` so each edit is atomic, re-checked by veraPDF, audit-logged, and
-undoable:
+`service.py` so each edit is atomic, audit-logged, and undoable. The veraPDF
+re-check is deferred by default (it costs seconds per run): edits set
+`Sidecar.verapdf_stale`, `check_now()` scores on demand, and `decide()` always
+re-checks the bytes being approved, so the gate is never weakened:
 
 - change a tag's type; write an image description;
 - mark content decorative (it leaves the reading order and its page content is
-  re-marked as background — the true inverse operation is "Tag untagged", so
+  re-marked as background — the true inverse is dragging over it again, so
   this is reversible);
 - remove a wrapper tag while keeping its contents;
 - move a tag earlier/later in the reading order;

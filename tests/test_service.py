@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -921,6 +922,166 @@ def test_list_modules_reads_the_workspace_folders(tmp_path):
     (tmp_path / "outbox" / "AC1100").mkdir(parents=True)
     # reserved status folders are never modules
     assert service.list_modules(config) == ["AC1100", "MG2001"]
+
+
+# ------------------------------------------------- the deferred (off) check
+# veraPDF is a Java subprocess costing seconds; running it after every edit
+# made a twenty-alt-text session crawl. With check=False the edit still lands
+# and is still audited -- only the scoring waits for check_now() or the gate.
+
+
+def _tagged_draft(tmp_path: Path, monkeypatch) -> Path:
+    """A processed draft plus a stubbed structure edit, so these tests exercise
+    the check/skip path without needing pikepdf or a real tag tree."""
+    config = _write_config(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+    service.run_batch(None, config)
+    monkeypatch.setattr(service.structure, "edit_element", lambda pdf, node_id, mutate: "Figure")
+    return config
+
+
+def test_edit_with_the_check_off_defers_scoring_and_flags_it_stale(tmp_path, monkeypatch):
+    config = _tagged_draft(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        service.verapdf,
+        "validate",
+        lambda pdf, profile="ua1", cli=None: (
+            calls.append(pdf) or VeraResult(passed=True, profile=profile)
+        ),
+    )
+    pdf = tmp_path / "outbox" / "a.pdf"
+
+    result = service.set_figure_alt(pdf, 3, "a chart", config_path=config, check=False)
+
+    assert calls == []  # the slow part never ran
+    assert result["checked"] is False
+    assert result["verapdf_passed"] is None
+    # the edit itself landed, and is audited
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "audit" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-1]["event"] == "edit-alt"
+    # ...and the old verdict is marked stale so no UI can present it as current
+    assert service.list_queue(config)[0].verapdf_stale is True
+
+
+def test_check_now_scores_on_demand_and_clears_the_stale_flag(tmp_path, monkeypatch):
+    config = _tagged_draft(tmp_path, monkeypatch)
+    pdf = tmp_path / "outbox" / "a.pdf"
+    service.set_figure_alt(pdf, 3, "a chart", config_path=config, check=False)
+    assert service.list_queue(config)[0].verapdf_stale is True
+    monkeypatch.setattr(
+        service.verapdf,
+        "validate",
+        lambda p, profile="ua1", cli=None: VeraResult(
+            passed=False, failed_clauses=["7.1-3"], profile=profile
+        ),
+    )
+
+    result = service.check_now(pdf, config)
+
+    assert result == {
+        "ok": True,
+        "checked": True,
+        "verapdf_passed": False,
+        "failed_clauses": ["7.1-3"],
+        "superseded": False,  # the bytes did not change while veraPDF ran
+    }
+    item = service.list_queue(config)[0]
+    assert item.verapdf_stale is False
+    assert item.verapdf_passed is False
+    assert item.verapdf_failed_clauses == ["7.1-3"]
+
+
+def test_check_now_keeps_the_document_stale_if_it_changed_mid_check(tmp_path, monkeypatch):
+    # veraPDF takes seconds and the UI stays live: an edit landing DURING the
+    # check would otherwise have its stale flag wiped by a verdict measured on
+    # the pre-edit bytes -- a verdict for a file that no longer exists.
+    config = _tagged_draft(tmp_path, monkeypatch)
+    pdf = tmp_path / "outbox" / "a.pdf"
+
+    def validate_then_someone_edits(p, profile="ua1", cli=None):
+        p.write_bytes(PDF_BYTES + b"% edited while the check ran\n")
+        return VeraResult(passed=True, profile=profile)
+
+    monkeypatch.setattr(service.verapdf, "validate", validate_then_someone_edits)
+
+    result = service.check_now(pdf, config)
+
+    assert result["superseded"] is True
+    assert service.list_queue(config)[0].verapdf_stale is True  # still needs a check
+
+
+def test_concurrent_edits_do_not_lose_one_another(tmp_path, monkeypatch):
+    # the review's reproduced defect: every edit is a whole-file
+    # read-modify-write, and both clients dispatch on threads. Without
+    # serialisation the second edit opens the pre-first bytes and its save
+    # silently drops the first -- while the audit log claims both landed.
+    import threading
+
+    config = _write_config(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+    service.run_batch(None, config)
+    pdf = tmp_path / "outbox" / "a.pdf"
+    inside = threading.Event()
+
+    def slow_edit(target, node_id, mutate):
+        # the real shape of every edit: READ the whole file, work, then save
+        # over it. The read must happen before the pause or the race cannot
+        # occur -- that is exactly the window a second edit slips into.
+        content = target.read_bytes()
+        inside.set()
+        time.sleep(0.4)
+        target.write_bytes(content + f"% edit {node_id}\n".encode())
+        return "Figure"
+
+    monkeypatch.setattr(service.structure, "edit_element", slow_edit)
+    errors: list[BaseException] = []
+
+    def edit(node_id: int) -> None:
+        try:
+            service.set_figure_alt(pdf, node_id, f"alt {node_id}", config_path=config, check=False)
+        except BaseException as exc:  # noqa: BLE001 - reported, not raised, in a thread
+            errors.append(exc)
+
+    first = threading.Thread(target=edit, args=(1,))
+    first.start()
+    assert inside.wait(timeout=5)  # the first edit is inside its window
+    second = threading.Thread(target=edit, args=(2,))
+    second.start()
+    for t in (first, second):
+        t.join(timeout=10)
+
+    assert errors == []
+    # both edits are present: the second waited instead of overwriting the first
+    text = pdf.read_bytes()
+    assert b"% edit 1\n" in text and b"% edit 2\n" in text
+    # ...and both are undoable: two distinct snapshots, not one clobbered pair
+    assert service.undo_depth("a.pdf", config) == 2
+
+
+def test_the_gate_always_checks_whatever_the_setting(tmp_path, monkeypatch):
+    # the invariant that makes deferring safe: decide() re-scores the real
+    # bytes, so a document can never ship on a verdict that predates an edit.
+    config = _tagged_draft(tmp_path, monkeypatch)
+    pdf = tmp_path / "outbox" / "a.pdf"
+    service.set_figure_alt(pdf, 3, "a chart", config_path=config, check=False)
+    calls = []
+    monkeypatch.setattr(
+        service.verapdf,
+        "validate",
+        lambda p, profile="ua1", cli=None: (
+            calls.append(p) or VeraResult(passed=True, profile=profile)
+        ),
+    )
+
+    sidecar = service.decide(pdf, reviewer="s1", approve=True, config_path=config)
+
+    assert len(calls) == 1  # the gate measured the bytes being approved
+    assert sidecar.verapdf_stale is False
+    assert sidecar.approval.status == ApprovalStatus.APPROVED
 
 
 def test_move_tag_boundary_reports_no_move_without_crashing(tmp_path, monkeypatch):

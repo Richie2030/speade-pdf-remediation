@@ -110,6 +110,26 @@ main { flex: 1; display: flex; min-height: 0; }
 .mdone-head .caret { width: 14px; flex: none; }
 .mdone-head:focus-visible { outline: 3px solid var(--ucc-yellow); outline-offset: -3px; }
 
+/* remove-from-list: a view filter, never a delete (files are always kept) */
+.qitem, .mgroup-head { position: relative; }
+.qclose {
+  position: absolute; top: 6px; right: 8px; min-height: 24px; padding: 0 7px;
+  font-size: 16px; line-height: 1; border-radius: 6px; opacity: 0;
+  border: 1px solid var(--line); background: #fff; color: var(--ink-muted);
+}
+.mgroup-head .qclose { top: 7px; border-color: transparent; background: transparent; color: inherit; }
+.qitem:hover .qclose, .mgroup-head:hover .qclose,
+.qclose:focus-visible { opacity: 1; }
+.qclose:hover { background: #f6dbd9; color: #7c211c; border-color: #e3b6b2; }
+.qitem.is-hidden { opacity: .55; }
+.qitem.is-hidden .qclose { opacity: 1; }
+.qrestore {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 14px; font-size: 13px; color: var(--ink-muted);
+  background: var(--bg); border-top: 1px solid var(--line);
+}
+.qrestore button { min-height: 28px; padding: 2px 10px; font-size: 13px; }
+
 .qitem.waiting { cursor: default; background: #fbfcfe; }
 .qitem.waiting .name { color: var(--ink-muted); }
 .qitem { padding: 12px 14px; border-bottom: 1px solid #edf1f6; cursor: pointer; }
@@ -224,6 +244,11 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 #structure-note { padding: 8px 2px; }
 
+/* one edit at a time: while a save is in flight the pages stop inviting a
+   second gesture (a drag built from the pre-edit tree would carry stale ids) */
+body.edit-busy #page-stack { cursor: progress; opacity: .75; }
+body.edit-busy .pageband { pointer-events: none; }
+
 /* marquee (drag) selection over the page + the bulk-action bar it opens */
 .pageband { user-select: none; }
 .marquee {
@@ -252,6 +277,10 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 #bulk-bar[hidden] { display: none; }
 #bulk-count { font-weight: 700; }
+#bulk-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#bulk-actions[hidden] { display: none; }
+#drag-type-wrap { font-weight: 700; font-size: 14px; }
+.muted-on-navy { font-weight: 400 !important; opacity: .85; font-size: 13px; }
 #bulk-bar select {
   min-height: 32px; padding: 2px 6px; border: 2px solid #fff; border-radius: 6px;
   background: #fff; color: var(--ink); font-size: 14px;
@@ -365,6 +394,23 @@ main { flex: 1; display: flex; min-height: 0; }
 #alt-text:disabled { background: var(--bg); color: var(--ink-muted); }
 #alt-status { padding: 6px 14px 0; min-height: 22px; }
 .alt-actions { display: flex; justify-content: center; gap: 10px; padding: 10px 14px 14px; }
+
+/* ------------------------------------------------------------ settings */
+#settings-overlay {
+  position: fixed; inset: 0; z-index: 50; background: rgba(0, 27, 46, .55);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+#settings-modal {
+  background: #fff; border-radius: 10px; max-width: 560px; width: 100%;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, .35);
+}
+#settings-close {
+  min-height: 36px; padding: 2px 12px; font-size: 22px; line-height: 1;
+  background: transparent; border-color: #fff; color: #fff;
+}
+#settings-close:hover { background: rgba(255, 255, 255, .15); }
+.setting-row { display: flex; gap: 12px; align-items: flex-start; padding: 12px 0; font-size: 15px; }
+.setting-row input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--ucc-navy); }
 
 /* ---------------------------------------------------------------- help */
 #help-overlay {

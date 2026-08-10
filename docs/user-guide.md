@@ -116,7 +116,11 @@ without leaving SPEADE:
   pick "Heading 2" and click *Change tag*.
 - **Write an image description** — select an Image and type what it shows and
   why it matters, then *Save description*. (Never machine-generated: this is
-  the human step.)
+  the human step.) To go through **every** image in one pass, use the
+  **Alt Text** button at the top right: it steps image by image like Acrobat's
+  *Set Alternate Text*, scrolling the page to each one, and the arrows save as
+  they move. The button counts what is still missing, e.g. "Alt Text (3
+  needed)".
 - **Mark as decorative** — for anything that carries no information (a border,
   a flourish, a page number, a decorative image): it leaves the reading order
   entirely and needs no description, so screen readers skip it. Use this instead
@@ -131,30 +135,31 @@ without leaving SPEADE:
   these buttons fix a caption or heading that reads in the wrong place. They
   move a tag within its own group; bigger rearrangements are an Acrobat job.
 
-**Selecting many tags at once** — hold the mouse down on a page and **drag a
-rectangle**, just like Acrobat: every tag box inside it is selected (highlighted
-on the page and in the tree), and a bar appears above the pages with actions for
-the whole selection:
+**Tagging by dragging** — first pick a type in **Drag on the page to tag as**
+(the bar above the pages), then hold the mouse down and **drag a rectangle**,
+just like Acrobat. What happens depends on what the rectangle catches:
 
-- **Merge into one** — the most common fix for scans: text the app broke into
-  many small paragraphs becomes ONE tag of the type you pick (a paragraph, or a
-  Figure with its caption). Contents stay in reading order.
-- **Change all** — retag the whole selection in one go.
-- **Mark all decorative** — clear a page's worth of noise (page furniture,
-  scan borders) in one action; the app asks first if any of it contains text.
-- **New tag from lines** — the finer grain: drag over *part* of a tag (say a
-  heading the app swallowed into the top of a paragraph, or the last two lines
-  that are really a caption) and the highlighted **lines** are carved out into
-  one new tag of the type you pick. Carved from a tag's opening line, the new
-  tag lands *above* it; otherwise below — matching how it reads.
-- **Tag untagged** — for content with **no tag at all** (dashed **red**
-  highlight when you drag over it): text the app missed, or something that was
-  marked decorative. It gets one brand-new tag of the type you pick, placed
-  beside its neighbours in reading order. This also means decorative is not a
-  one-way door — drag over decorated content to make it real content again.
-  (Rarely, on a page drawn in an unusual way, the app will refuse and point
-  you to Acrobat rather than guess.)
-- **Clear** (or press Escape) — drop the selection.
+- **Content with no tag at all** (dashed **red** highlight): text the app
+  missed, or something previously marked decorative. It is tagged straight away
+  as the type you picked — no button to press — and placed beside its
+  neighbours in reading order. This is also why decorative is not a one-way
+  door: drag over decorated content to make it real content again. (Rarely, on
+  a page drawn in an unusual way, the app refuses and points you to Acrobat
+  rather than guess.)
+- **Part of a tag's lines** (say a heading the app swallowed into the top of a
+  paragraph, or the last two lines that are really a caption): those lines are
+  carved out into one new tag of the chosen type, again straight away. Carved
+  from a tag's opening line the new tag lands *above* it; otherwise below —
+  matching how it reads.
+- **Two or more whole tags**: here there is a real choice, so a bar of actions
+  appears instead:
+  - **Merge into one** — the most common fix for scans: text the app broke into
+    many small paragraphs becomes ONE tag of the type you pick (a paragraph, or
+    a Figure with its caption). Contents stay in reading order.
+  - **Change all** — retag the whole selection in one go.
+  - **Mark all decorative** — clear a page's worth of noise (page furniture,
+    scan borders) in one action; the app asks first if any of it contains text.
+  - **Clear** (or press Escape) — drop the selection.
 
 One drag is one saved change: a single *Undo last change* reverses the whole
 action. A short drag still counts as an ordinary click on a single tag.
@@ -163,9 +168,18 @@ action. A short drag still counts as an ordinary click on a single tag.
   loses all structure, ready to be tagged from scratch in Acrobat (or restored
   with *Undo all edits*).
 
-Each save writes into the PDF and re-runs the automatic check, so you see the
-issue count change immediately. The document then shows an **Edited** banner —
-expected. Two levels of undo sit at the top right: **Undo last change** steps
+Each save writes straight into the PDF, and the document then shows an
+**Edited** banner — expected.
+
+The automatic check does **not** run after every edit: it takes a few seconds
+each time, which is painful when you are writing several descriptions in a row.
+Instead the document reads *"not checked since your last change"*, and you
+press **Check accessibility** (top right) whenever you want the current result.
+Nothing can slip through: **Approve and Reject always run the check** on the
+file as it is at that moment. If you prefer the old behaviour, switch
+*Check accessibility after every change* on in **Settings**.
+
+Two levels of undo sit at the top right: **Undo last change** steps
 back one edit at a time (up to 20 within a session), and **Undo all edits
 (reprocess)** starts over from the untouched original. Everything else (splitting merged
 paragraphs, table header cells, complex reading order) is still Acrobat's job.

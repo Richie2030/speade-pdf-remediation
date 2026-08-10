@@ -88,6 +88,11 @@ class Sidecar(BaseModel):
     # gates
     verapdf_passed: bool | None = None  # did the automated PDF/UA checker pass
     verapdf_failed_clauses: list[str] = Field(default_factory=list)  # the failed PDF/UA rules
+    # True when the document has been edited since that verdict was measured --
+    # the reviewer turned the automatic check off (it is slow), so the UI must
+    # say "not checked since your last change" rather than show a stale pass.
+    # The gate itself is unaffected: decide() always re-checks the real bytes.
+    verapdf_stale: bool = False
     approval: Approval = Field(default_factory=Approval)  # human sign-off (who, when, status)
     # TODO: flat verapdf_* fields (above) vs storing the full VeraResult. Keep this module
     # free of a `validation.verapdf` import so contract.py stays the dependency root.

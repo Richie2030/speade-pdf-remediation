@@ -9,7 +9,8 @@ expect. These are design decisions and physics, not bugs; none will change
 - **No network, no integrations.** No Canvas/Ally connection, no cloud, no AI
   text generation. Everything is local files.
 - **Image descriptions are never machine-written.** Alt-text is authored by
-  the human reviewer in Acrobat — a deliberate quality decision.
+  the human reviewer — a deliberate quality decision. It is written **in the
+  app** (the *Alt Text* stepper walks every image), not only in Acrobat.
 - **In-app editing covers the common corrections, not all of them.** You can
   retag an element, write an image description, mark something decorative,
   remove a wrapper tag while keeping its contents, move a tag earlier/later in
@@ -19,8 +20,8 @@ expect. These are design decisions and physics, not bugs; none will change
   or a reprocess). Deleting a tag that holds content directly is refused by
   design: it would leave untagged content, a worse defect than a wrong tag type.
   The drag tool works at three grains: whole tags (merge / retag / decorate),
-  lines within a tag ("New tag from lines", the fix for a heading swallowed
-  into a paragraph), and content with no tag at all ("Tag untagged" — text the
+  lines within a tag (drag over part of a tag - the fix for a heading swallowed
+  into a paragraph), and content with no tag at all (drag over it — text the
   engine missed, or decorated content being brought back; on a page drawn in
   an unusual way this refuses safely and defers to Acrobat). What still needs
   Acrobat: selecting part of a single *line* (a word or phrase — content is

@@ -44,6 +44,10 @@ class OpenInboxBody(BaseModel):
     module: str | None = None
 
 
+class AutoCheckBody(BaseModel):
+    on: bool
+
+
 class MetadataBody(BaseModel):
     file: str
     title: str = ""
@@ -140,6 +144,18 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     @app.get("/api/modules")
     def modules() -> dict:
         return {"modules": bridge.modules()}
+
+    @app.get("/api/auto_check")
+    def auto_check() -> dict:
+        return {"auto_check": bridge.auto_check()}
+
+    @app.post("/api/auto_check")
+    def set_auto_check(body: AutoCheckBody) -> dict:
+        return bridge.set_auto_check(body.on)
+
+    @app.post("/api/check_now")
+    def check_now(body: FileBody) -> dict:
+        return bridge.check_now(body.file)
 
     @app.get("/api/pdf")
     def pdf(file: str):
