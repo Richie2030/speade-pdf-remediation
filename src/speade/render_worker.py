@@ -128,11 +128,15 @@ class PageRenderer:
             return
         # speade.subproc hides the child's console window (the flashing
         # terminal reported live); the wrapper is also what the repo scan pins.
+        # The child's stderr goes to the error log, so when a poison page kills
+        # it the reviewer's log says what pdfium actually complained about.
+        from speade import diagnostics
+
         self._proc = subproc.popen(
             _worker_command(),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=diagnostics.log_handle() or subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
         )
@@ -198,6 +202,12 @@ class PageRenderer:
             if reply_line is None:
                 # EOF mid-request: the sacrifice happened (a native fault
                 # killed the child). Log the page; restart lazily on the next call.
+                from speade import diagnostics
+
+                diagnostics.log_line(
+                    f"page renderer died rendering page {int(index) + 1} of {pdf.name} "
+                    f"(exit {self._proc.poll() if self._proc else '?'})"
+                )
                 self._crashes[page_key] = self._crashes.get(page_key, 0) + 1
                 self._reap()
                 return {

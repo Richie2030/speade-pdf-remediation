@@ -25,8 +25,9 @@ Double-click **`speade-desktop.exe`** (inside the `speade-desktop` folder).
 
 A window opens with:
 
-- a **toolbar** — *Add PDFs…*, *Process PDFs*, *Refresh list*, *Open input
-  folder*, *Open output folder*, *History*;
+- a **toolbar** — your *Module* code box, *Add PDFs…*, *Process PDFs*,
+  *Refresh list*, *Open input folder*, *Open output folder*, *History*,
+  *Settings* and *Help*;
 - a **document list** down the left;
 - a **detail pane** on the right — everything about the selected document.
 
@@ -105,7 +106,8 @@ What to check, in order:
 2. Does the tree's top-to-bottom order match the sensible reading order?
 3. Are lists and tables tagged as lists and tables, not paragraphs?
 4. Does every meaningful image show as **Image**, and does it have a
-   description? ("(no description yet)" means you write one — in Acrobat.)
+   description? ("(no description yet)" means you write one — the *Alt Text*
+   button walks you through every image.)
 5. Is any visible content missing a box entirely?
 
 **Fixing tags in the app** — select any tag (in the tree or by clicking its box)
@@ -174,10 +176,17 @@ Each save writes straight into the PDF, and the document then shows an
 The automatic check does **not** run after every edit: it takes a few seconds
 each time, which is painful when you are writing several descriptions in a row.
 Instead the document reads *"not checked since your last change"*, and you
-press **Check accessibility** (top right) whenever you want the current result.
+press **Run Auto Check** (top right) whenever you want the current result.
 Nothing can slip through: **Approve and Reject always run the check** on the
 file as it is at that moment. If you prefer the old behaviour, switch
-*Check accessibility after every change* on in **Settings**.
+*Run the auto check after every change* on in **Settings**.
+
+**If something goes wrong** — the app keeps its own error log. Open
+**Settings → Open error log** and send that file on when you report a fault:
+it records errors, and crashes the app could not recover from, with enough
+detail to diagnose them. (It lists file names at most — never document
+content.) On a PC set up with `scripts/setup-machine.ps1`, Windows also keeps a
+crash dump alongside it.
 
 Two levels of undo sit at the top right: **Undo last change** steps
 back one edit at a time (up to 20 within a session), and **Undo all edits

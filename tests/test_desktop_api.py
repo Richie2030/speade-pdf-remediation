@@ -186,6 +186,25 @@ def test_auto_check_setting_drives_whether_edits_score(tmp_path, monkeypatch):
     assert len(seen) == 2  # on: scored again straight away
 
 
+def test_open_error_log_creates_the_file_so_the_button_never_dead_ends(tmp_path, monkeypatch):
+    # what a Student Partner sends on when the app misbehaves: the button must
+    # open something even on a PC where nothing has gone wrong yet.
+    from speade import diagnostics
+    from speade.desktop import api as api_module
+
+    monkeypatch.setattr(diagnostics, "crash_log_dir", lambda: tmp_path / "speade")
+    opened: list = []
+    monkeypatch.setattr(api_module, "_open_native", opened.append)
+
+    result = _api(tmp_path).open_error_log()
+
+    json.dumps(result)  # the bridge contract
+    log = tmp_path / "speade" / diagnostics.LOG_NAME
+    assert result == {"path": str(log)}
+    assert log.is_file()
+    assert opened == [log]
+
+
 def test_check_now_on_a_missing_document_is_an_error_not_a_crash(tmp_path):
     api = _api(tmp_path)
     assert "error" in api.check_now("nope.pdf")

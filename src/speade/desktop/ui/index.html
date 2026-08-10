@@ -56,7 +56,7 @@
           <h2 id="doc-name"></h2>
           <div class="head-actions">
             <button id="alt-walk" hidden title="Step through every image in the document and write its description, like Acrobat's Set Alternate Text">Alt Text</button>
-            <button id="check-now" class="primary" title="Run the accessibility check on this document now (it does not run after every change)">Check accessibility</button>
+            <button id="check-now" class="primary" title="Run the automatic accessibility check (veraPDF) on this document now - it does not run after every change">Run Auto Check</button>
             <button id="undo-last" hidden>Undo last change</button>
             <button id="remove-tags" title="Delete the whole tag structure so the document can be tagged from scratch in Acrobat">Remove all tags</button>
             <button id="revert" hidden>Undo all edits (reprocess)</button>
@@ -241,14 +241,24 @@
         <label class="setting-row">
           <input type="checkbox" id="auto-check-toggle">
           <span>
-            <b>Check accessibility after every change</b><br>
+            <b>Run the auto check after every change</b><br>
             <span class="muted">Off by default: the check takes a few seconds each
             time, which is slow when you are writing several descriptions in a
-            row. With it off, use <b>Check accessibility</b> when you want the
+            row. With it off, use <b>Run Auto Check</b> when you want the
             result. Your decision at the end always runs the check either way, so
             nothing ships unchecked.</span>
           </span>
         </label>
+
+        <div class="setting-row">
+          <span>
+            <b>Something went wrong?</b><br>
+            <span class="muted">The app records problems automatically — errors,
+            and crashes it cannot recover from. Send this file on when reporting
+            a fault.</span><br>
+            <button id="open-error-log">Open error log</button>
+          </span>
+        </div>
       </div>
     </div>
   </div>
@@ -318,7 +328,7 @@
           <li><b>Undo</b> - <i>Undo last change</i> steps back one edit at a time;
             <i>Undo all edits</i> starts over from the original. Every edit is
             recorded in History; the accessibility check runs when you press
-            <i>Check accessibility</i> (or automatically, if you switch that on
+            <i>Run Auto Check</i> (or automatically, if you switch that on
             in Settings) - and always when you Approve or Reject.</li>
           <li>Still Acrobat's job: selecting part of a single line and table
             header cells.</li>
@@ -348,7 +358,7 @@
           <dt>Why does it say "not checked since your last change"?</dt>
           <dd>The check takes a few seconds, so it does not run after every edit -
             that would make writing several descriptions painfully slow. Press
-            <b>Check accessibility</b> whenever you want the current result, and
+            <b>Run Auto Check</b> whenever you want the current result, and
             note that <b>Approve/Reject always runs it</b>, so nothing can ship
             unchecked. You can switch it back to running after every change in
             <b>Settings</b>.</dd>

@@ -529,7 +529,7 @@ function renderFacts(item) {
         .join("")
     : "found issues";
   const checkText = item.verapdf_stale
-    ? "not checked since your last change - press <b>Check accessibility</b> " +
+    ? "not checked since your last change - press <b>Run Auto Check</b> " +
       "(your decision at the end always runs it)"
     : item.verapdf_passed === null
       ? "runs after processing and again when you decide"
@@ -1195,7 +1195,7 @@ function showEditor(node) {
 // verdict that predates the change.
 function verdictText(result) {
   if (result.checked === false) {
-    return "not checked yet (press Check accessibility when you are ready)";
+    return "not checked yet (press Run Auto Check when you are ready)";
   }
   return result.verapdf_passed
     ? "automatic check now passes"
@@ -1605,10 +1605,10 @@ async function checkNow() {
   const file = selected;
   $("check-now").disabled = true;
   $("check-now").textContent = "Checking…";
-  setStatus("Running the accessibility check…");
+  setStatus("Running the automatic accessibility check…");
   const result = await api.checkNow(file);
   $("check-now").disabled = false;
-  $("check-now").textContent = "Check accessibility";
+  $("check-now").textContent = "Run Auto Check";
   if (result.error) {
     setStatus(result.error);
     return;
@@ -1996,6 +1996,10 @@ async function init() {
   tagTypes = await api.tagTypes();
   fillTagTypes(); // the drag bar's type must be pickable BEFORE any drag
   $("check-now").onclick = checkNow;
+  $("open-error-log").onclick = async () => {
+    const result = await api.openErrorLog();
+    if (result && result.error) setStatus(result.error);
+  };
   $("settings").onclick = () => ($("settings-overlay").hidden = false);
   $("settings-close").onclick = () => ($("settings-overlay").hidden = true);
   $("settings-overlay").onclick = (e) => {
@@ -2011,7 +2015,7 @@ async function init() {
     setStatus(
       autoCheck
         ? "The accessibility check will run after every change (slower)."
-        : "The accessibility check now runs only when you press Check accessibility."
+        : "The auto check now runs only when you press Run Auto Check."
     );
   };
   await api.setAutoCheck(autoCheck); // the backend starts in sync with the box

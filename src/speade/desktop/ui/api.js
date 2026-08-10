@@ -53,6 +53,7 @@ const api = {
   addPdfs: (module) => bridge("add_pdfs", module || null),
   decide: (file, reviewer, approve) => bridge("decide", file, reviewer, approve),
   openOutput: (file) => bridge("open_output", file),
+  openErrorLog: () => bridge("open_error_log"),
   openInbox: (module) => bridge("open_inbox", module || null),
   openOutbox: () => bridge("open_outbox"),
 };

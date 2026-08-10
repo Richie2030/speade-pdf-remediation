@@ -90,6 +90,7 @@ const api = {
   auditLog: (limit) => getJSON("/api/audit_log?limit=" + (limit || 200)),
   decide: (file, reviewer, approve) => postJSON("/api/decide", { file, reviewer, approve }),
   openOutput: (file) => postJSON("/api/open_output", { file }).then((r) => r.ok),
+  openErrorLog: () => postJSON("/api/open_error_log", {}),
   openInbox: (module) =>
     postJSON("/api/open_inbox", { module: module || null }).then((r) => r.ok),
   openOutbox: () => postJSON("/api/open_outbox").then((r) => r.ok),

@@ -73,11 +73,11 @@ before pilot · **[edge]** = corner case, note if it fails.
   that module's `approved\` subfolder. Newest processed documents list first.
 - [ ] **[imp]** History and the CSV export show the module for module documents
   (e.g. "MG2001 / week1.pdf" in-app, a `module` column in the export).
-- [ ] **[core]** Edit speed + deferred check: with Settings → *Check
-  accessibility after every change* OFF (the default), a retag / description /
+- [ ] **[core]** Edit speed + deferred check: with Settings → *Run the auto
+  check after every change* OFF (the default), a retag / description /
   drag-tag returns in about a second, the queue chip reads "changed since the
   last check", and the facts row says "not checked since your last change".
-  Press **Check accessibility** → the real verdict returns. Turn the setting ON
+  Press **Run Auto Check** → the real verdict returns. Turn the setting ON
   → the next edit is visibly slower and reports a verdict immediately.
 - [ ] **[core]** Approve a document whose check is stale → the decision still
   runs veraPDF (nothing ships unchecked) and the recorded verdict is fresh.
@@ -91,6 +91,10 @@ before pilot · **[edge]** = corner case, note if it fails.
 - [ ] **[core]** Hover a document → **×** removes it from the list; a module
   heading's **×** removes the whole module. Files on disk are untouched; the
   footer says "N removed from this list" with **Show** / **Put all back**.
+- [ ] **[core]** Settings → **Open error log** → a text file opens (created on
+  the spot if the app has never had to write anything). After any failure it
+  contains a timestamped entry: an unhandled error's full traceback, a dead
+  page renderer naming the document and page, or a native crash's Python stack.
 - [ ] **[core]** Open a document with images → an "Alt Text" button
   appears top right (with a count of missing ones). It opens the *Set alternate
   text* stepper: "Image 1 of N", the page scrolls to each image, ◀ ▶ move
@@ -290,8 +294,8 @@ stability:
 **Undo and re-check:**
 
 - [ ] **[core]** After any edit (check off), read the result line and the queue
-  chip. → "not checked yet (press Check accessibility…)" and the chip reads
-  "changed since the last check". Press *Check accessibility* → veraPDF runs:
+  chip. → "not checked yet (press Run Auto Check…)" and the chip reads
+  "changed since the last check". Press *Run Auto Check* → veraPDF runs:
   "automatic check now passes" / "…N issue(s) left", issues listed as
   "code – plain meaning". With the Settings toggle ON, the verdict appears
   immediately after each edit instead.

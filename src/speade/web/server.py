@@ -292,6 +292,10 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     def open_output(body: FileBody) -> dict:
         return {"ok": bridge.open_output(body.file)}
 
+    @app.post("/api/open_error_log")
+    def open_error_log() -> dict:
+        return bridge.open_error_log()
+
     @app.post("/api/open_inbox")
     def open_inbox(body: OpenInboxBody | None = None) -> dict:
         return {"ok": bridge.open_inbox((body or OpenInboxBody()).module)}

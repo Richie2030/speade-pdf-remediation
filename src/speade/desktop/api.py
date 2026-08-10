@@ -514,6 +514,27 @@ class SpeadeApi:
         _open_native(pdf)
         return True
 
+    def open_error_log(self) -> dict:
+        """Open the error log in the system text editor -- what a Student
+        Partner sends on when the app misbehaves. Creates it if the app has
+        not had to write anything yet, so the button never dead-ends."""
+        from speade import diagnostics
+
+        try:
+            path = diagnostics.error_log_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.is_file():
+                path.write_text(
+                    "SPEADE error log\n"
+                    "Nothing has gone wrong on this PC yet -- problems are "
+                    "recorded here automatically.\n",
+                    encoding="utf-8",
+                )
+            _open_native(path)
+            return {"path": str(path)}
+        except Exception as exc:
+            return {"error": f"could not open the error log: {str(exc)[:120]}"}
+
     def open_inbox(self, module: str | None = None) -> bool:
         """Open the input folder in the file explorer (drop PDFs in directly).
         With a module code typed, open THAT module's folder (created on the
