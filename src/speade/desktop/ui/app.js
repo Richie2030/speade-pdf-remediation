@@ -732,6 +732,18 @@ async function loadStructure(file, retrying = false) {
     note.textContent = tree.error + " - this document cannot be displayed here.";
     return;
   }
+  // pdfium could not read this document's page geometry (a damaged file can
+  // fault inside the native library). The tag list below is still complete and
+  // fully editable -- say what is missing rather than showing nothing.
+  if (tree.geometry_error) {
+    const note = $("structure-note");
+    note.hidden = false;
+    note.textContent =
+      "Highlight boxes are not available for this document, so tags are not " +
+      "outlined on the pages and untagged content cannot be found by dragging. " +
+      "The tag list on the left still works, and you can still edit and decide. " +
+      "(Reason: " + tree.geometry_error + ")";
+  }
   const links = tree.tagged ? countLinks(tree.root) : 0;
   const filter = $("link-filter");
   filter.hidden = links === 0;

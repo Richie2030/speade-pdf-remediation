@@ -29,6 +29,67 @@ def test_untagged_pdf_reports_not_tagged(tmp_path):
     assert summary.total == 0
 
 
+def _one_paragraph_pdf(tmp_path, name="tree.pdf"):
+    """A one-paragraph tagged PDF with real marked content (so it has geometry).
+    NOTE: distinct from _tagged_pdf below, which adds a Figure."""
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(612, 792))
+    page.Resources = pikepdf.Dictionary(
+        Font=pikepdf.Dictionary(
+            F1=pikepdf.Dictionary(
+                Type=pikepdf.Name.Font,
+                Subtype=pikepdf.Name.Type1,
+                BaseFont=pikepdf.Name.Helvetica,
+            )
+        )
+    )
+    page.Contents = pdf.make_stream(
+        b"/P <</MCID 0>> BDC BT /F1 24 Tf 72 700 Td (Hello structure) Tj ET EMC"
+    )
+    p_elem = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name.P, K=0, Pg=page.obj))
+    doc_elem = pdf.make_indirect(pikepdf.Dictionary(S=pikepdf.Name("/Document"), K=p_elem))
+    pdf.Root.StructTreeRoot = pdf.make_indirect(
+        pikepdf.Dictionary(Type=pikepdf.Name.StructTreeRoot, K=doc_elem)
+    )
+    out = tmp_path / name
+    pdf.save(out)
+    return out
+
+
+def test_a_document_pdfium_cannot_read_still_shows_its_tag_tree(tmp_path, monkeypatch):
+    """Reported live: a damaged PDF faulted inside pdfium ("access violation
+    reading 0xFFFFFFFFFFFFFFFF") and the reviewer lost the WHOLE document --
+    "this document cannot be displayed here". The tag tree comes from pikepdf
+    and is unaffected, so only the geometry may be missing."""
+    pytest.importorskip("pypdfium2", reason="needs --extra ocr")
+    from speade.validation import structure
+
+    out = _one_paragraph_pdf(tmp_path, "damaged.pdf")
+
+    def native_fault(*_args, **_kwargs):
+        raise OSError("exception: access violation reading 0xFFFFFFFFFFFFFFFF")
+
+    monkeypatch.setattr(structure, "_page_geometry", native_fault)
+
+    tree = structure.structure_tree(out)
+
+    # the tree survives, complete and editable
+    assert tree.tagged is True
+    (doc_node,) = tree.root
+    (p,) = doc_node.kids
+    assert p.type == "P"
+    assert p.id == 1  # ids still address the same elements, so edits still work
+    # ...and the UI is told plainly what is missing rather than shown nothing
+    assert tree.geometry_error is not None
+    assert "access violation" in tree.geometry_error
+    assert p.box is None and p.page is None  # no highlight boxes to draw
+    assert tree.untagged == []
+    # pages still lay out (sizes fall back to /MediaBox), so previews can render
+    assert len(tree.pages) == 1
+    assert tree.pages[0].width == pytest.approx(612)
+    assert tree.pages[0].height == pytest.approx(792)
+
+
 def test_structure_tree_has_geometry_and_text(tmp_path):
     # the tags panel: a marked-content paragraph must come back with its page,
     # a sane bounding box (pdfium's content marks), and a text snippet.

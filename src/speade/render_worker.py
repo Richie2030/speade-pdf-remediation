@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import queue as queue_mod
 import subprocess  # for PIPE/DEVNULL only; spawning goes through speade.subproc
 import sys
@@ -57,6 +58,21 @@ def worker_main_stdio() -> None:
     re-read, and opened from BYTES so no file handle lingers to fight the
     edit-saves' atomic replace."""
     import io
+
+    # pdfium narrates damaged files from C++ straight to a file descriptor
+    # ("Ignoring wrong pointing object 6 0 (offset 0)"), which no Python-level
+    # redirection can catch. fd 1 carries this protocol, so take a PRIVATE
+    # copy of it and point fd 1 at stderr -- which the parent routes into the
+    # error log. Native chatter then becomes diagnostics instead of a corrupt
+    # JSON line (and damaged files are exactly when it happens).
+    protocol = sys.stdout
+    try:
+        protocol_fd = os.dup(1)
+        os.dup2(2, 1)  # anything printed to "stdout" now lands in the log
+        sys.stdout = os.fdopen(1, "w", encoding="utf-8", errors="replace")
+        protocol = os.fdopen(protocol_fd, "w", encoding="utf-8", newline="\n")
+    except Exception:  # exotic environment: keep the plain stdout protocol
+        protocol = sys.stdout
 
     import pypdfium2 as pdfium
 
@@ -101,8 +117,8 @@ def worker_main_stdio() -> None:
                 }
         except Exception as exc:  # a bad request/file is an answer, not a death
             reply = {"error": f"page image unavailable: {str(exc)[:120]}"}
-        sys.stdout.write(json.dumps(reply) + "\n")
-        sys.stdout.flush()
+        protocol.write(json.dumps(reply) + "\n")
+        protocol.flush()
 
 
 def _worker_command() -> list[str]:

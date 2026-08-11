@@ -155,6 +155,11 @@ class StructureTree(BaseModel):
     root: list[StructureNode] = Field(default_factory=list)
     truncated: bool = False  # _MAX_NODES hit: the tree shown is a prefix
     untagged: list[UntaggedRef] = Field(default_factory=list)
+    # pdfium could not read this document's page geometry (a damaged file can
+    # fault inside the native library). The tag tree below is still complete --
+    # it comes from pikepdf -- but there are no highlight boxes to draw and no
+    # untagged content to find, so the UI says so instead of pretending.
+    geometry_error: str | None = None
 
 
 def _is_element(node, pikepdf) -> bool:
@@ -1273,18 +1278,62 @@ def structure_tree(pdf: Path) -> StructureTree:
         return _structure_tree_unlocked(pdf, pikepdf, pdfium)
 
 
+def _page_sizes_from_pikepdf(doc) -> list[PageSize]:
+    """Page sizes read from /MediaBox instead of pdfium -- the fallback when
+    the native library cannot read this document, so the pages still lay out."""
+    sizes: list[PageSize] = []
+    for page in doc.pages:
+        obj = getattr(page, "obj", page)
+        try:
+            box = [float(v) for v in obj.get("/MediaBox", [0, 0, 612, 792])]
+            width, height = abs(box[2] - box[0]), abs(box[3] - box[1])
+            if int(obj.get("/Rotate", 0) or 0) % 180 == 90:  # landscape display
+                width, height = height, width
+        except Exception:
+            width, height = 612.0, 792.0  # US Letter: a sane band to draw
+        sizes.append(PageSize(width=width or 612.0, height=height or 792.0))
+    return sizes
+
+
 def _structure_tree_unlocked(pdf: Path, pikepdf, pdfium) -> StructureTree:
-    fpdf = pdfium.PdfDocument(pdf.read_bytes())  # bytes: no lingering file handle
+    # pdfium contributes the page GEOMETRY: highlight boxes, the untagged
+    # content the drag tool finds, page sizes and text snippets. A damaged
+    # document can fault inside the native library (reported live as
+    # "exception: access violation reading 0xFFFFFFFFFFFFFFFF"), and losing the
+    # whole document over that is a bad trade -- the tag tree itself comes from
+    # pikepdf and is unaffected. So: geometry is best-effort, the tree is not.
+    fpdf = None
+    geo: list = []
+    loose: list = []
+    sizes: list[PageSize] = []
+    textpages: list = []
+    geometry_error: str | None = None
     try:
+        fpdf = pdfium.PdfDocument(pdf.read_bytes())  # bytes: no lingering handle
         geo, untagged_pages = _page_geometry(fpdf)
         loose = [ref for page_refs in untagged_pages for ref in page_refs]
         sizes = [PageSize(width=p.get_size()[0], height=p.get_size()[1]) for p in fpdf]
         textpages = [p.get_textpage() for p in fpdf]
+    except Exception as exc:  # incl. OSError from a native access violation
+        geometry_error = f"{type(exc).__name__}: {str(exc)[:100]}"
+        geo, loose, textpages = [], [], []
+        if fpdf is not None:
+            with suppress(Exception):
+                fpdf.close()
+            fpdf = None
 
+    try:
         with pikepdf.open(pdf) as doc:
+            if not sizes:  # pdfium failed: lay the pages out from /MediaBox
+                sizes = _page_sizes_from_pikepdf(doc)
             root = doc.Root.get("/StructTreeRoot")
             if root is None:
-                return StructureTree(tagged=False, pages=sizes, untagged=loose)
+                return StructureTree(
+                    tagged=False,
+                    pages=sizes,
+                    untagged=loose,
+                    geometry_error=geometry_error,
+                )
             page_index = {}
             for i, page in enumerate(doc.pages):
                 page_obj = getattr(page, "obj", page)
@@ -1395,6 +1444,8 @@ def _structure_tree_unlocked(pdf: Path, pikepdf, pdfium) -> StructureTree:
                 root=tree,
                 truncated=state["truncated"],
                 untagged=loose,
+                geometry_error=geometry_error,
             )
     finally:
-        fpdf.close()
+        if fpdf is not None:
+            fpdf.close()

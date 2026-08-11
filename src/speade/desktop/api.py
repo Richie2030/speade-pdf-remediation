@@ -509,9 +509,16 @@ class SpeadeApi:
                 return {"error": str(exc)}
         import webview  # lazy: only the running app has a window anyway
 
+        # pywebview renamed this: FileDialog.OPEN is current, OPEN_DIALOG is
+        # deprecated and warns ("will be removed in a future version"). Prefer
+        # the new name where it exists so a future pywebview cannot break
+        # Add PDFs, and keep the old one working on the pinned v1 release.
+        open_dialog = getattr(getattr(webview, "FileDialog", None), "OPEN", None)
+        if open_dialog is None:
+            open_dialog = webview.OPEN_DIALOG
         picks = (
             self._window.create_file_dialog(
-                webview.OPEN_DIALOG, allow_multiple=True, file_types=("PDF files (*.pdf)",)
+                open_dialog, allow_multiple=True, file_types=("PDF files (*.pdf)",)
             )
             or ()
         )
