@@ -177,9 +177,14 @@ The automatic check does **not** run after every edit: it takes a few seconds
 each time, which is painful when you are writing several descriptions in a row.
 Instead the document reads *"not checked since your last change"*, and you
 press **Run Auto Check** (top right) whenever you want the current result.
-Nothing can slip through: **Approve and Reject always run the check** on the
-file as it is at that moment. If you prefer the old behaviour, switch
-*Run the auto check after every change* on in **Settings**.
+Approving and rejecting do not wait for the check either, so a decision is
+instant. What protects you is honesty rather than a forced re-run: if the
+recorded verdict predates your edits, the app says *"the automatic check has
+not been run since your last change"* and the permanent history records the
+same, instead of presenting an old result as if it described what you
+approved. Press **Run Auto Check** before deciding whenever you want the
+verdict on file to be current. Both behaviours can be switched back on in
+**Settings**.
 
 **If something goes wrong** — the app keeps its own error log. Open
 **Settings → Open error log** and send that file on when you report a fault:
@@ -203,9 +208,12 @@ decide.
 At the bottom of the pane: check the **reviewer** box has your student number,
 then click **Approve — ready to share** or **Reject — needs more work**.
 
-- **Approve** re-runs the automatic check on the file *as it is right now*,
-  records your decision permanently (who, when, what the validator said), and
-  moves the PDF to the **`approved`** folder — the ready-to-share shelf.
+- **Approve** fingerprints the file *as it is right now*, records your decision
+  permanently (who, when, what the validator last said and **whether that
+  verdict was current**), and moves the PDF to the **`approved`** folder — the
+  ready-to-share shelf. It does not wait for a fresh check unless you have
+  switched that on in Settings; press *Run Auto Check* first if you want the
+  recorded verdict to describe exactly what you are approving.
 - **Reject** moves it to the **`rejected`** folder — the to-fix shelf.
 
 The validator's verdict is advice; **your click is the decision**. A document

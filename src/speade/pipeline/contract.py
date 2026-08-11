@@ -91,8 +91,13 @@ class Sidecar(BaseModel):
     # True when the document has been edited since that verdict was measured --
     # the reviewer turned the automatic check off (it is slow), so the UI must
     # say "not checked since your last change" rather than show a stale pass.
-    # The gate itself is unaffected: decide() always re-checks the real bytes.
     verapdf_stale: bool = False
+    # WHICH bytes the recorded verdict actually describes. Lets any caller ask
+    # "is this verdict still true of the file on disk?" with one comparison --
+    # including after an outside edit in Acrobat, which no in-app flag sees.
+    # It is what keeps the trust trail honest now that the gate can be told to
+    # skip its own re-check.
+    verapdf_sha256: str | None = None
     approval: Approval = Field(default_factory=Approval)  # human sign-off (who, when, status)
     # TODO: flat verapdf_* fields (above) vs storing the full VeraResult. Keep this module
     # free of a `validation.verapdf` import so contract.py stays the dependency root.

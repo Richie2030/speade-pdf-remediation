@@ -282,6 +282,9 @@ def test_decide_records_and_returns_json_safe(tmp_path, monkeypatch):
         "file": "a.pdf",
         "verapdf_passed": True,
         "failed_clauses": [],
+        # the draft was scored at processing time and never edited since, so
+        # the recorded verdict does describe the approved bytes
+        "verapdf_stale": False,
         "status": "approved",
         "reviewer": "s123456",
     }

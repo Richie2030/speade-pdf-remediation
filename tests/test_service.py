@@ -1084,6 +1084,73 @@ def test_the_gate_always_checks_whatever_the_setting(tmp_path, monkeypatch):
     assert sidecar.approval.status == ApprovalStatus.APPROVED
 
 
+def test_decide_without_a_check_reuses_a_verdict_measured_on_these_bytes(tmp_path, monkeypatch):
+    # the reviewer turned the decision-time check off because it is slow. An
+    # UNEDITED draft was already scored at processing time on exactly these
+    # bytes, so the record is accurate and nothing needs re-running.
+    config = _write_config(tmp_path)
+    (tmp_path / "inbox" / "a.pdf").write_bytes(PDF_BYTES)
+    service.run_batch(None, config)
+    calls: list = []
+    monkeypatch.setattr(
+        service.verapdf,
+        "validate",
+        lambda p, profile="ua1", cli=None: (
+            calls.append(p) or VeraResult(passed=True, profile=profile)
+        ),
+    )
+
+    sidecar = service.decide(
+        tmp_path / "outbox" / "a.pdf", reviewer="s1", approve=True, config_path=config, check=False
+    )
+
+    assert calls == []  # instant: no Java, no wait
+    assert sidecar.approval.status == ApprovalStatus.APPROVED
+    assert sidecar.verapdf_passed is True
+    assert sidecar.verapdf_stale is False  # the verdict really is about these bytes
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "audit" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-1]["verapdf_current"] is True
+
+
+def test_decide_without_a_check_never_claims_an_outdated_verdict(tmp_path, monkeypatch):
+    # the honest half: the reviewer edited the document after the last check,
+    # so the recorded verdict does NOT describe what they approved. The
+    # decision stands; the trail says the verdict predates it.
+    config = _tagged_draft(tmp_path, monkeypatch)
+    pdf = tmp_path / "outbox" / "a.pdf"
+
+    def real_edit(target, node_id, mutate):  # actually changes the bytes
+        target.write_bytes(target.read_bytes() + b"% description written\n")
+        return "Figure"
+
+    monkeypatch.setattr(service.structure, "edit_element", real_edit)
+    service.set_figure_alt(pdf, 3, "a chart", config_path=config, check=False)
+    calls: list = []
+    monkeypatch.setattr(
+        service.verapdf,
+        "validate",
+        lambda p, profile="ua1", cli=None: (
+            calls.append(p) or VeraResult(passed=True, profile=profile)
+        ),
+    )
+
+    sidecar = service.decide(pdf, reviewer="s1", approve=True, config_path=config, check=False)
+
+    assert calls == []  # still instant
+    assert sidecar.approval.status == ApprovalStatus.APPROVED  # the decision stands
+    assert sidecar.verapdf_stale is True  # ...but the verdict is openly outdated
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "audit" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-1]["event"] == "verify"
+    assert events[-1]["decision"] == "approved"
+    assert events[-1]["verapdf_current"] is False  # the trail never overstates
+
+
 def test_move_tag_boundary_reports_no_move_without_crashing(tmp_path, monkeypatch):
     # review-caught regression: the module refactor missed move_tag's
     # moved=False branch (_undo_snapshots grew a module arg) -- clicking

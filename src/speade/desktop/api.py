@@ -50,9 +50,14 @@ class SpeadeApi:
         self._page_renderer = None  # lazy: speade.render_worker.PageRenderer
         # veraPDF is a Java subprocess costing seconds; running it after EVERY
         # edit makes a twenty-alt-text session crawl. Off by default: edits are
-        # instant, and the reviewer runs check_now (or simply decides, which
-        # always re-checks) when they want the verdict. The UI owns the setting.
+        # instant, and the reviewer runs check_now when they want the verdict.
+        # The UI owns the setting.
         self._auto_check = False
+        # The same cost lands on Approve/Reject, once per document, which is
+        # what a reviewer feels most in a long sitting. Off by default too:
+        # decide() keeps the trail honest by recording whether the verdict it
+        # stored actually describes the approved bytes.
+        self._check_on_decide = False
 
     def attach_window(self, window) -> None:
         self._window = window
@@ -99,6 +104,15 @@ class SpeadeApi:
         """Turn the after-every-edit check on/off (the Settings toggle)."""
         self._auto_check = bool(on)
         return {"auto_check": self._auto_check}
+
+    def check_on_decide(self) -> bool:
+        """Does the check run when the reviewer approves or rejects?"""
+        return self._check_on_decide
+
+    def set_check_on_decide(self, on: bool) -> dict:
+        """Turn the check at approve/reject on/off (the Settings toggle)."""
+        self._check_on_decide = bool(on)
+        return {"check_on_decide": self._check_on_decide}
 
     def check_now(self, file: str) -> dict:
         """Run the accessibility check on demand -- the button that replaces
@@ -463,7 +477,11 @@ class SpeadeApi:
         pdf = self._resolve(file) or (outbox / module if module else outbox) / name
         try:
             sidecar = service.decide(
-                pdf, reviewer=reviewer, approve=approve, config_path=self._config_path
+                pdf,
+                reviewer=reviewer,
+                approve=approve,
+                config_path=self._config_path,
+                check=self._check_on_decide,
             )
         except FileNotFoundError as exc:
             return {"error": str(exc)}
@@ -473,6 +491,8 @@ class SpeadeApi:
             "file": pdf.name,
             "verapdf_passed": sidecar.verapdf_passed,
             "failed_clauses": sidecar.verapdf_failed_clauses,
+            # the verdict above predates this version of the document
+            "verapdf_stale": sidecar.verapdf_stale,
             "status": sidecar.approval.status.value,
             "reviewer": sidecar.approval.reviewer,
         }

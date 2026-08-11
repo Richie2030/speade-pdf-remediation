@@ -245,8 +245,22 @@
             <span class="muted">Off by default: the check takes a few seconds each
             time, which is slow when you are writing several descriptions in a
             row. With it off, use <b>Run Auto Check</b> when you want the
-            result. Your decision at the end always runs the check either way, so
-            nothing ships unchecked.</span>
+            result. Your decision is recorded either way, and if the check has
+            not been run since your last change the record says so.</span>
+          </span>
+        </label>
+
+        <label class="setting-row">
+          <input type="checkbox" id="decide-check-toggle">
+          <span>
+            <b>Run the auto check when you approve or reject</b><br>
+            <span class="muted">Off by default: it adds a few seconds to every
+            decision, which mounts up over a batch. With it off, the recorded
+            result is whatever the last check found — and if you have edited the
+            document since, the record says so plainly rather than pretending
+            the old result still applies. Your decision is what counts either
+            way; press <b>Run Auto Check</b> first whenever you want the
+            verdict on file to be current.</span>
           </span>
         </label>
 
@@ -361,9 +375,11 @@
           <dd>The check takes a few seconds, so it does not run after every edit -
             that would make writing several descriptions painfully slow. Press
             <b>Run Auto Check</b> whenever you want the current result, and
-            note that <b>Approve/Reject always runs it</b>, so nothing can ship
-            unchecked. You can switch it back to running after every change in
-            <b>Settings</b>.</dd>
+            your decision is recorded either way. Approving does not wait for
+            the check by default (it would add seconds to every document); when
+            the verdict on record predates your edits, the app and the history
+            both say so rather than implying it is current. Both behaviours are
+            switchable in <b>Settings</b>.</dd>
           <dt>How do I clear finished documents out of the list?</dt>
           <dd>Hover a document (or a module heading) and click the <b>&times;</b>.
             That only tidies the list - every file stays exactly where it is, and

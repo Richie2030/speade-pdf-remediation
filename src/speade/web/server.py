@@ -153,6 +153,14 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     def set_auto_check(body: AutoCheckBody) -> dict:
         return bridge.set_auto_check(body.on)
 
+    @app.get("/api/check_on_decide")
+    def check_on_decide() -> dict:
+        return {"check_on_decide": bridge.check_on_decide()}
+
+    @app.post("/api/check_on_decide")
+    def set_check_on_decide(body: AutoCheckBody) -> dict:
+        return bridge.set_check_on_decide(body.on)
+
     @app.post("/api/check_now")
     def check_now(body: FileBody) -> dict:
         return bridge.check_now(body.file)

@@ -79,8 +79,12 @@ before pilot · **[edge]** = corner case, note if it fails.
   last check", and the facts row says "not checked since your last change".
   Press **Run Auto Check** → the real verdict returns. Turn the setting ON
   → the next edit is visibly slower and reports a verdict immediately.
-- [ ] **[core]** Approve a document whose check is stale → the decision still
-  runs veraPDF (nothing ships unchecked) and the recorded verdict is fresh.
+- [ ] **[core]** Approve a document whose check is stale (Settings → *Run the
+  auto check when you approve or reject* OFF, the default) → the decision is
+  near-instant, and BOTH the on-screen message and the History entry say the
+  check has not been run since your last change (the audit line records
+  `verapdf_current: false`). Turn that setting ON → approving runs veraPDF
+  again and records a current verdict.
 - [ ] **[core]** Scroll deep into a document, drag over untagged content → it is
   tagged as the type in *Drag on the page to tag as* with NO button press, and
   the view stays exactly where you were (it must not jump to page 1).

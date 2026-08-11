@@ -18,6 +18,7 @@ const doneOpen = new Set(); // module keys whose "Done" section is expanded
 let knownModules = []; // existing module folders, for case-snapping the box
 let batchRunning = false; // renderQueue must not re-enable Process mid-batch
 let autoCheck = false; // run the accessibility check after EVERY edit (Settings)
+let checkOnDecide = false; // ...and when approving/rejecting (Settings)
 // One edit at a time. A drag now applies on release, so a second gesture
 // during the ~1s save would send a request built from the PRE-edit tree: the
 // backend serialises the writes, but the second one's ids/indexes are stale.
@@ -38,6 +39,7 @@ let hiddenDocs = new Set();
 let hiddenModules = new Set();
 try {
   autoCheck = localStorage.getItem("speade-auto-check") === "1";
+  checkOnDecide = localStorage.getItem("speade-check-on-decide") === "1";
   hiddenDocs = new Set(JSON.parse(localStorage.getItem("speade-hidden-docs") || "[]"));
   hiddenModules = new Set(JSON.parse(localStorage.getItem("speade-hidden-modules") || "[]"));
 } catch (e) { /* storage unavailable: defaults are fine */ }
@@ -1797,17 +1799,22 @@ async function decide(approve) {
     return;
   }
   $("approve").disabled = $("reject").disabled = true;
-  setStatus("Running the final automatic check…");
+  setStatus(checkOnDecide ? "Running the final automatic check…" : "Recording your decision…");
   try {
     const result = await api.decide(selected, reviewer, approve);
     if (result.error) {
       $("gate-result").textContent = "Error: " + result.error;
       return;
     }
-    const verdict = result.verapdf_passed
-      ? "automatic check passed"
-      : "automatic check found issues: " +
-        (veraIssueLines(result.failed_clauses || []).join("; ") || "unlisted");
+    // never present a verdict measured before the reviewer's edits as if it
+    // described the document they just decided on.
+    const verdict = result.verapdf_stale
+      ? "the automatic check has not been run since your last change (your " +
+        "decision is recorded either way)"
+      : result.verapdf_passed
+        ? "automatic check passed"
+        : "automatic check found issues: " +
+          (veraIssueLines(result.failed_clauses || []).join("; ") || "unlisted");
     // refresh FIRST: renderDetail clears gate-result, so the outcome message
     // must be written after the re-render or the reviewer never sees it
     // (found by the automated browser QA run).
@@ -2096,7 +2103,22 @@ async function init() {
         : "The auto check now runs only when you press Run Auto Check."
     );
   };
-  await api.setAutoCheck(autoCheck); // the backend starts in sync with the box
+  $("decide-check-toggle").checked = checkOnDecide;
+  $("decide-check-toggle").onchange = async () => {
+    checkOnDecide = $("decide-check-toggle").checked;
+    try {
+      localStorage.setItem("speade-check-on-decide", checkOnDecide ? "1" : "0");
+    } catch (e) { /* storage unavailable: the setting holds for this session */ }
+    await api.setCheckOnDecide(checkOnDecide);
+    setStatus(
+      checkOnDecide
+        ? "The auto check will run when you approve or reject (slower)."
+        : "Approving and rejecting no longer wait for the auto check."
+    );
+  };
+  // the backend starts in sync with both boxes
+  await api.setAutoCheck(autoCheck);
+  await api.setCheckOnDecide(checkOnDecide);
   $("help").onclick = () => ($("help-overlay").hidden = false);
   $("help-close").onclick = () => ($("help-overlay").hidden = true);
   $("help-overlay").onclick = (e) => {

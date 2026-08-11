@@ -280,6 +280,7 @@ def _score_draft(ws: Workspace, sidecar: Sidecar, module: str | None = None) -> 
     sidecar.verapdf_passed = vera.passed
     sidecar.verapdf_failed_clauses = vera.failed_clauses
     sidecar.verapdf_stale = False  # freshly measured on the bytes just written
+    sidecar.verapdf_sha256 = sha256_file(out_pdf)
     _side_path(ws, module, name).write_text(sidecar.model_dump_json(), encoding="utf-8")
     return sidecar
 
@@ -741,6 +742,7 @@ def _after_edit(
             sidecar.verapdf_passed = vera.passed
             sidecar.verapdf_failed_clauses = vera.failed_clauses
             sidecar.verapdf_stale = False
+            sidecar.verapdf_sha256 = sha256_file(pdf)
         else:
             sidecar.verapdf_stale = True
         side_path.write_text(sidecar.model_dump_json(), encoding="utf-8")
@@ -782,6 +784,7 @@ def check_now(pdf: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, A
         sidecar.verapdf_passed = vera.passed
         sidecar.verapdf_failed_clauses = vera.failed_clauses
         sidecar.verapdf_stale = superseded
+        sidecar.verapdf_sha256 = measured
         side_path.write_text(sidecar.model_dump_json(), encoding="utf-8")
     return {
         "ok": True,
@@ -1132,6 +1135,7 @@ def decide(
     reviewer: str,
     approve: bool,
     config_path: Path = DEFAULT_CONFIG_PATH,
+    check: bool = True,
 ) -> Sidecar:
     """The human gate: record veraPDF's machine verdict, then the human's
     APPROVED/REJECTED decision, on the sidecar next to `pdf`.
@@ -1139,6 +1143,17 @@ def decide(
     The machine gate is advisory (it fails closed to a flag when no veraPDF
     runner exists); the human decision is authoritative. Returns the updated
     sidecar, which is also persisted and audit-logged.
+
+    `check` controls the re-check at decision time, which costs seconds of Java
+    on every single approval. Either way the trail stays honest, because the
+    verdict is stored with the fingerprint of the bytes it describes:
+
+      * the recorded verdict already describes THESE bytes -> reused, no run
+        (a re-run is deterministic, so it would only cost time);
+      * otherwise with `check` -> veraPDF runs and the verdict is current;
+      * otherwise -> the old verdict is kept, still marked stale, and the audit
+        line records `verapdf_current: false`. Nothing is ever presented as a
+        verdict on the approved bytes when it is not one.
     """
     ws = workspace(config_path)
     if not pdf.is_file():
@@ -1156,11 +1171,21 @@ def decide(
     # re-fingerprint before recording the decision: approved == shipped.
     sidecar.output_sha256 = sha256_file(pdf)
 
-    vera = verapdf.validate(pdf, ws.verapdf_profile, cli=ws.verapdf_cli)
-    sidecar.verapdf_passed = vera.passed
-    sidecar.verapdf_failed_clauses = vera.failed_clauses
-    # the gate always measures the real bytes, whatever the auto-check setting
-    sidecar.verapdf_stale = False
+    if check:
+        # asked for a measurement: take one, never infer it from bookkeeping
+        vera = verapdf.validate(pdf, ws.verapdf_profile, cli=ws.verapdf_cli)
+        sidecar.verapdf_passed = vera.passed
+        sidecar.verapdf_failed_clauses = vera.failed_clauses
+        sidecar.verapdf_sha256 = sidecar.output_sha256
+        verdict_is_current = True
+    else:
+        # no run: the verdict on record still stands IF it was measured on
+        # exactly these bytes (nothing changed since), otherwise it is openly
+        # recorded as predating this version of the document.
+        verdict_is_current = (
+            sidecar.verapdf_sha256 is not None and sidecar.verapdf_sha256 == sidecar.output_sha256
+        )
+    sidecar.verapdf_stale = not verdict_is_current
 
     status = ApprovalStatus.APPROVED if approve else ApprovalStatus.REJECTED
     clear_undo(ws, module, pdf.name)  # the decision closes this editing session
@@ -1206,7 +1231,11 @@ def decide(
             **({"module": module} if module else {}),
             "reviewer": reviewer,
             "decision": status.value,
-            "verapdf_passed": vera.passed,
+            "verapdf_passed": sidecar.verapdf_passed,
+            # False = the verdict above predates this version of the document
+            # (the reviewer has the decision-time check switched off). The
+            # decision still stands; the trail simply does not overstate it.
+            "verapdf_current": verdict_is_current,
             "output_sha256": sidecar.output_sha256,
             **({"moved_to": moved_to} if moved_to else {}),
             **({"move_failed": True} if move_failed else {}),

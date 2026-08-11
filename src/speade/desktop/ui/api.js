@@ -23,6 +23,7 @@ const api = {
   modules: () => bridge("modules"),
   autoCheck: () => bridge("auto_check"),
   setAutoCheck: (on) => bridge("set_auto_check", !!on),
+  setCheckOnDecide: (on) => bridge("set_check_on_decide", !!on),
   checkNow: (file) => bridge("check_now", file),
   loadPdf: (file) => bridge("load_pdf", file),
   runBatch: () => bridge("run_batch"),

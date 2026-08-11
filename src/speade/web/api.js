@@ -52,6 +52,7 @@ const api = {
   modules: async () => (await getJSON("/api/modules")).modules,
   autoCheck: async () => (await getJSON("/api/auto_check")).auto_check,
   setAutoCheck: (on) => postJSON("/api/auto_check", { on: !!on }),
+  setCheckOnDecide: (on) => postJSON("/api/check_on_decide", { on: !!on }),
   checkNow: (file) => postJSON("/api/check_now", { file }),
   runBatchStatus: () => getJSON("/api/run_batch_status"),
   runBatchCancel: () => postJSON("/api/run_batch_cancel"),
