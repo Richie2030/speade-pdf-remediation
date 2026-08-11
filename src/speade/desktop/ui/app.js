@@ -79,6 +79,73 @@ let bulkSelected = []; // whole tags captured by the last marquee drag
 let bulkLines = []; // individual lines captured by the last marquee drag
 let bulkUntagged = []; // untagged pieces captured by the last marquee drag
 let altWalk = null; // the Set-alternate-text stepper: { figures, at, savedAny }
+// Where the reviewer has parked the alt-text box, or null for "wherever the
+// app puts it". Once they place it themselves their position WINS: the
+// auto-dodge (which slides the box away from each image) would otherwise yank
+// it back on every arrow press. Remembered across documents and sessions.
+let altPos = null;
+try {
+  const stored = JSON.parse(localStorage.getItem("speade-alt-pos") || "null");
+  if (stored && typeof stored.left === "number" && typeof stored.top === "number") {
+    altPos = stored;
+  }
+} catch (e) { /* storage unavailable: the box just starts in its usual place */ }
+
+// Keep the box reachable: a grabbable strip of the title bar must always stay
+// on screen, however small the window gets or wherever it was dropped.
+function clampAltPos(left, top) {
+  const el = $("alt-modal");
+  const width = el.offsetWidth || 400;
+  const grabbable = 140; // of the title bar, horizontally
+  return {
+    left: Math.min(Math.max(left, grabbable - width), window.innerWidth - grabbable),
+    top: Math.min(Math.max(top, 0), Math.max(0, window.innerHeight - 40)),
+  };
+}
+
+function applyAltPos() {
+  const el = $("alt-modal");
+  if (altPos) {
+    el.classList.remove("dodge-left"); // the reviewer's placement, not ours
+    el.style.left = `${altPos.left}px`;
+    el.style.top = `${altPos.top}px`;
+    el.style.right = "auto";
+  } else {
+    el.style.left = el.style.top = el.style.right = ""; // back to the stylesheet
+  }
+}
+
+function saveAltPos() {
+  try {
+    if (altPos) localStorage.setItem("speade-alt-pos", JSON.stringify(altPos));
+    else localStorage.removeItem("speade-alt-pos");
+  } catch (e) { /* storage unavailable: the position holds for this session */ }
+}
+
+function startAltDrag(e) {
+  // the title bar is the handle; its buttons stay clickable
+  if (e.button !== 0 || e.target.closest("button")) return;
+  const rect = $("alt-modal").getBoundingClientRect();
+  const grabX = e.clientX - rect.left;
+  const grabY = e.clientY - rect.top;
+  const onMove = (ev) => {
+    altPos = clampAltPos(ev.clientX - grabX, ev.clientY - grabY);
+    applyAltPos();
+  };
+  const onUp = () => {
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", onUp);
+    document.removeEventListener("pointercancel", onUp);
+    saveAltPos();
+  };
+  // listen on the DOCUMENT, not the bar: the pointer leaves the bar the moment
+  // the drag starts, and pointer capture is not reliable in every webview.
+  document.addEventListener("pointermove", onMove);
+  document.addEventListener("pointerup", onUp);
+  document.addEventListener("pointercancel", onUp);
+  e.preventDefault();
+}
+
 
 // ------------------------------------------------- plain-language dictionaries
 const STATUS_TEXT = {
@@ -1355,6 +1422,8 @@ function openAltWalk() {
   const firstMissing = figures.findIndex((f) => !f.alt);
   altWalk = { figures, at: firstMissing === -1 ? 0 : firstMissing, savedAny: false };
   $("alt-modal").hidden = false;
+  if (altPos) altPos = clampAltPos(altPos.left, altPos.top); // the window may have shrunk
+  applyAltPos();
   showAltFigure();
 }
 
@@ -1380,8 +1449,10 @@ function showAltFigure() {
   // reviewer never describes a blank band (and an evicted page comes back).
   ensurePageImage(node.page);
   // keep the dialog off the image: figure sits in the right half of its page
-  // -> dialog docks left, and vice versa.
-  if (node.box && node.page !== null && structTree) {
+  // -> dialog docks left, and vice versa. Skipped entirely once the reviewer
+  // has placed the box themselves -- moving it out from under them would be
+  // worse than overlapping.
+  if (!altPos && node.box && node.page !== null && structTree) {
     const size = structTree.pages[node.page];
     const centerFrac = (node.box[0] + node.box[2]) / 2 / size.width;
     $("alt-modal").classList.toggle("dodge-left", centerFrac > 0.5);
@@ -1983,6 +2054,13 @@ async function init() {
     // decoration needs no description: grey the text out, like Acrobat
     $("alt-text").disabled = $("alt-decorative").checked;
   };
+  $("alt-head").addEventListener("pointerdown", startAltDrag);
+  // a resized (or restored) window must never strand the box off screen
+  window.addEventListener("resize", () => {
+    if (!altPos) return;
+    altPos = clampAltPos(altPos.left, altPos.top);
+    applyAltPos();
+  });
   $("make-decorative").onclick = markDecorative;
   $("unwrap-tag").onclick = unwrapTag;
   $("move-earlier").onclick = () => moveTag(-1);

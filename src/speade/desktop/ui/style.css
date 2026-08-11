@@ -362,11 +362,13 @@ body.edit-busy .pageband { pointer-events: none; }
    left side instead, so it never sits on the image being described */
 #alt-modal.dodge-left { right: auto; left: 36px; }
 .alt-head {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; gap: 8px;
   background: var(--ucc-navy); color: #fff; border-radius: 8px 8px 0 0;
   padding: 8px 14px;
+  cursor: move; /* the grab handle: drag the box anywhere in the window */
+  user-select: none; touch-action: none; /* a drag must not select the title */
 }
-.alt-head h2 { margin: 0; font-size: 17px; }
+.alt-head h2 { margin: 0; font-size: 17px; flex: 1; }
 #alt-close {
   min-height: 32px; padding: 0 10px; font-size: 20px; line-height: 1;
   background: transparent; border-color: #fff; color: #fff;

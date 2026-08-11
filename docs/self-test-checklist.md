@@ -91,6 +91,11 @@ before pilot · **[edge]** = corner case, note if it fails.
 - [ ] **[core]** Hover a document → **×** removes it from the list; a module
   heading's **×** removes the whole module. Files on disk are untouched; the
   footer says "N removed from this list" with **Show** / **Put all back**.
+- [ ] **[imp]** Drag the *Set alternate text* box by its blue title bar → it
+  moves anywhere in the window and stays there as you step through images (it
+  stops sliding itself out of the way once you have placed it). Drag it hard at
+  a screen edge → a grabbable strip of the title bar always stays visible.
+  Close and reopen, or restart the app → it reappears where you left it.
 - [ ] **[core]** Settings → **Open error log** → a text file opens (created on
   the spot if the app has never had to write anything). After any failure it
   contains a timestamped entry: an unhandled error's full traceback, a dead

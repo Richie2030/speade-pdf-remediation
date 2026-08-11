@@ -207,7 +207,7 @@
        Acrobat's dialog. Non-modal on purpose: the page behind stays visible and
        scrolls to each image as the arrows move through them. -->
   <div id="alt-modal" role="dialog" aria-label="Set alternate text" hidden>
-    <div class="alt-head">
+    <div class="alt-head" id="alt-head" title="Drag this bar to move the box anywhere in the window">
       <h2>Set alternate text</h2>
       <button id="alt-close" aria-label="Close (descriptions already saved are kept)">&times;</button>
     </div>
@@ -314,7 +314,9 @@
           <li><b>All images in one pass</b> - <i>Alt Text</i> (top right) opens
             a stepper like Acrobat's <i>Set Alternate Text</i>: it walks image by
             image, you write a description (or tick <i>Decorative figure</i>),
-            and the arrows save as they move.</li>
+            and the arrows save as they move. It normally slides itself out of
+            the way of each image; <b>drag its blue title bar</b> to park it
+            wherever you prefer, and it stays there.</li>
           <li><b>Tag something new</b> - pick a type in <i>Drag on the page to
             tag as</i> (above the pages), then <b>drag a rectangle</b> over it.
             Content with no tag at all, or some of a tag's lines (the fix for a
