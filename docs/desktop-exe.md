@@ -39,6 +39,15 @@ some other directory: all fine. The app deliberately anchors every path to the
 `config.yaml` sitting next to the exe, never to the "current directory" it was
 launched from, so behaviour is identical no matter how it is started.
 
+**Sending the app to someone else** — one extra step. If the folder travels by
+email, Teams, OneDrive or a ZIP, Windows marks every file as "downloaded from
+the internet", and .NET then refuses to load the app's own `.dll`s: the exe
+dies with *"Failed to resolve Python.Runtime.Loader.Initialize"*. Tell the
+recipient to right-click the ZIP → Properties → tick **Unblock** *before*
+extracting, or afterwards run `Get-ChildItem -Recurse | Unblock-File` in the
+folder. `scripts\setup-machine.ps1` does this automatically. Full symptom and
+fix: `runbook.md` → *Troubleshooting a delivered speade-desktop folder*.
+
 **Moving the app** — also fine. Copy the entire `speade-desktop` folder
 anywhere (a USB stick, `C:\SPEADE\`, the library-room PCs) and run it from
 there. The only rule: **keep the folder intact**. The exe does not work

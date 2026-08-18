@@ -30,9 +30,13 @@ re-running the smoke test.
 
 Installs all four tools **machine-wide** at their pinned versions, puts them on
 the **system** PATH (so every login on a shared PC finds them), then verifies
-each one by running it and prints a single verdict. Re-runnable: anything
-already present is reported and skipped. Sections 2–5 below are the manual
-equivalent, kept for reference and troubleshooting.
+each one by running it and prints a single verdict. It also, for a delivered
+`speade-desktop` folder it finds beside itself: **unblocks** the files if they
+arrived by download/ZIP (otherwise the exe cannot load its .NET bridge — see
+*Troubleshooting* below), **checks** the .NET Framework is 4.7.2+, and
+**registers crash dumps** so a native crash leaves evidence. Re-runnable:
+anything already done is reported and skipped. Sections 2–5 below are the
+manual equivalent, kept for reference and troubleshooting.
 
 Two things the script handles that a manual install easily gets wrong:
 
@@ -131,6 +135,70 @@ uv run python -m pytest                            # full suite; corpus tests
 Optional: build the labelled test corpus (fixtures are derived locally, never
 committed): `uv run --extra detect --extra tag --extra ocr python datasets/fetch_seeds.py`
 then `... python datasets/build_corpus.py --gate`.
+
+## Troubleshooting a delivered `speade-desktop` folder
+
+### The .exe does nothing, or dies with "Failed to resolve Python.Runtime.Loader.Initialize"
+
+The full error looks like this:
+
+```
+RuntimeError: Failed to resolve Python.Runtime.Loader.Initialize from
+  ...\speade-desktop\_internal\pythonnet\runtime\Python.Runtime.dll
+```
+
+**Cause: mark-of-the-web, not App Control and not a bug in the app.** A folder
+that arrived by email, Teams, OneDrive or a ZIP carries Windows' "downloaded
+from the internet" mark on *every* file. .NET refuses to load a managed
+assembly from an untrusted zone, so the window's .NET bridge (pywebview →
+pythonnet) cannot start. Reported live on a tester's laptop, 2026-08-14.
+
+**Fix**, in PowerShell in the delivered folder:
+
+```powershell
+Get-ChildItem -Recurse | Unblock-File
+.\speade-desktop.exe
+```
+
+`setup-machine.ps1` now does this automatically for a `speade-desktop` folder
+it finds beside (or around) itself, so a fresh machine set up with the script
+never hits it. **Best habit when sending the folder:** zip it, and tell the
+recipient to right-click the ZIP → Properties → tick **Unblock** *before*
+extracting — nothing inside then inherits the mark.
+
+### It still fails the same way after unblocking
+
+Check the .NET Framework version:
+
+```powershell
+(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full').Release
+```
+
+**461808 or higher** is fine (4.7.2+). Lower, or a missing key, means the
+review window cannot start: install the .NET Framework 4.8 runtime and reboot.
+`setup-machine.ps1` reports this as a FAIL rather than installing it, because
+Windows 10/11 ship 4.8 already.
+
+### Nothing happens at all, and no error log appears
+
+If `%LOCALAPPDATA%\speade\error-log.txt` does **not** exist, the process never
+started — Windows blocked it before any of our code ran. That is Smart App
+Control, SmartScreen or antivirus, and it is expected for an unsigned build
+(see `deployment.md` on code signing). Note that turning Smart App Control off
+is **permanent** — it cannot be re-enabled without reinstalling Windows — so
+prefer the signed build, or run from source:
+
+```powershell
+winget install --id astral-sh.uv --scope machine
+uv sync --all-extras
+uv run python -m speade.desktop
+```
+
+### Anything else
+
+`%LOCALAPPDATA%\speade\error-log.txt` holds unhandled errors, native crash
+stacks and the page renderer's own output. In the app: **Settings → Open error
+log**. Ask for that file first; it usually names the cause outright.
 
 ## Building the desktop .exe (release packaging)
 

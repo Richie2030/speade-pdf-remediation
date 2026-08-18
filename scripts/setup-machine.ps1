@@ -337,6 +337,64 @@ rem SPEADE machine-wide launcher for the tagging engine (see scripts/setup-machi
     }
 }
 
+# --- unblock the delivered app ------------------------------------------------
+# A folder that arrived by email/Teams/OneDrive/ZIP carries Windows'
+# mark-of-the-web on EVERY file. .NET then refuses to load a managed assembly
+# from an untrusted zone, and speade-desktop.exe dies at startup with
+#   RuntimeError: Failed to resolve Python.Runtime.Loader.Initialize
+#              from ..._internal\pythonnet\runtime\Python.Runtime.dll
+# (reported live on a tester's laptop, 2026-08-14). It is not App Control and
+# not a bug in the app -- the .exe simply cannot load its .NET bridge. Clearing
+# the mark once, here, spares every future recipient the same dead end.
+Write-Step "Unblocking the delivered app (mark-of-the-web)"
+$appDir = $null
+$scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+$parentDir = if ($scriptDir) { Split-Path -Parent $scriptDir } else { $null }
+$candidates = @(
+    $scriptDir,                                   # script copied INTO the app folder
+    (Join-Path $scriptDir "speade-desktop")       # app folder sits BESIDE the script
+)
+if ($parentDir) {
+    $candidates += (Join-Path $parentDir "speade-desktop")        # repo\scripts\ layout
+    $candidates += (Join-Path $parentDir "dist\speade-desktop")   # a fresh build
+}
+foreach ($candidate in $candidates) {
+    if ($candidate -and (Test-Path (Join-Path $candidate "speade-desktop.exe"))) {
+        $appDir = $candidate
+        break
+    }
+}
+if (-not $appDir) {
+    Write-Skip "no speade-desktop.exe found next to this script -- nothing to unblock"
+} else {
+    try {
+        $marked = @(Get-ChildItem -Path $appDir -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { Get-Item -Path $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue })
+        if ($marked.Count -eq 0) {
+            Write-Skip "app files already trusted (no mark-of-the-web) in $appDir"
+        } else {
+            $marked | Unblock-File
+            Write-Ok "unblocked $($marked.Count) file(s) in $appDir -- the .exe can now load its .NET bridge"
+        }
+    } catch {
+        Write-Note "could not unblock $appDir ($($_.Exception.Message)). If the app fails with 'Failed to resolve Python.Runtime.Loader.Initialize', run: Get-ChildItem -Recurse | Unblock-File"
+    }
+}
+
+# .NET Framework 4.7.2+ is what pywebview's winforms backend needs (via
+# pythonnet). Windows 10/11 ship 4.8, so this is a check, not an install.
+$dotnetKey = "HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full"
+try {
+    $release = (Get-ItemProperty -Path $dotnetKey -ErrorAction Stop).Release
+    if ($release -ge 461808) {
+        Write-Ok ".NET Framework 4.7.2+ present (release $release)"
+    } else {
+        Write-Fail ".NET Framework is $release, below 4.7.2 (461808). The review window cannot start; install the .NET Framework 4.8 runtime."
+    }
+} catch {
+    Write-Fail "No .NET Framework 4.x found. The review window cannot start; install the .NET Framework 4.8 runtime."
+}
+
 # --- crash forensics ---------------------------------------------------------
 # WER LocalDumps: when the review app dies in native code (the recorded crashes
 # were faults inside pdfium.dll -- invisible to Python), Windows keeps a
