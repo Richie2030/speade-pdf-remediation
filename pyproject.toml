@@ -6,7 +6,10 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
-authors = [{ name = "SPEADE Student Partners" }]
+authors = [
+    { name = "Richard Liu" },
+    { name = "David Lesiak" },
+]
 
 # Runtime deps for the F1 skeleton ONLY (config / CLI / validation models).
 # Heavy stage engines (pypdf, pikepdf, ocrmypdf, docling, torch, ...)
